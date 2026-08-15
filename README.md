@@ -100,6 +100,38 @@ I/yoyo: android.software.leanback = 0      <- 0 means the patch is live
 I/yoyo: MANUFACTURER = NVIDIA
 ```
 
+## This is not an AM2R problem
+
+The gate lives in YoYo's runner, so it hits **any** GameMaker 1.4 game exported to the
+Android target. The clearest proof is the object name in the crash — the error is
+attributed to whatever GML object happens to be executing, which differs per game while
+the message stays identical:
+
+```
+AM2R              ... for object oTestKeys:   Incorrect Android target...
+Spelunky Classic HD ... for object obatintro: incorrect android target...
+```
+
+Same gate, different games. Documented reports, none of them AM2R:
+
+| Game / reporter | Where | What happened |
+|---|---|---|
+| **Spelunky Classic HD** (yancharkin) | [itch.io](https://itch.io/t/154069/android-tv) | Player reported the exact error on a Shield TV. The developer replied that the error gave too little to go on and they couldn't investigate further. Still unresolved. |
+| **COWCAT**'s game (commercial dev) | [GameMaker forum](https://forum.gamemaker.io/index.php?threads/apk-does-not-work-on-nvidia-shield-solved.26994/) | "An NVidia Shield player just reported the same error message for my game. I also compiled with the latest (1.4.1772)." |
+| **JRLS**'s game | same thread, 2017 | The original report. Only fixed by reinstalling the ancient GMS 1.4.1657 and rebuilding. |
+| **AM2R** | [XDA, 2018](https://xdaforums.com/t/help-request-am2r-game-dont-work-on-android-tv-how-to-fool-it.3872253/) | Three posts, zero replies, unresolved for years. |
+
+A related casualty is **[Grid Run](https://goncalomb.itch.io/gridrun)** (goncalomb), abandoned
+on Android for the underlying reason: *"GameMaker: Studio 1.4 does not support these new
+requirements (and never will), the Grid Run will never return to the Play Store."* Games
+in this position are frozen at their last 1.4 build — exactly the population this tool
+serves, because nobody is going to rebuild them.
+
+The pattern is consistent: the developer usually can't reproduce it (no Android TV on the
+desk), the only official fix is rebuilding the whole project on a different GameMaker
+version, and so the report is closed with a shrug. Patching the shipped APK sidesteps all
+of that.
+
 ## Verified on
 
 | Device | Android | Result |

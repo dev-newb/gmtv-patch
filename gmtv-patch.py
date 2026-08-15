@@ -771,6 +771,11 @@ def main():
     ap.add_argument("--shrink-audio", nargs="?", type=int, const=128, metavar="KBPS",
                     help="re-encode Ogg music to KBPS (default 128). Needs ffmpeg or "
                          "vorbis-tools. AM2R ships ~500kbps music that is ~76%% of the APK.")
+    ap.add_argument("--orientation", choices=("landscape", "portrait", "both"),
+                    help="rewrite the game's screen orientation. A portrait phone game "
+                         "pillarboxes on a 16:9 TV; 'landscape' makes GameMaker rebuild "
+                         "the view for the wider aspect (it re-lays out, it does not "
+                         "stretch). No effect on games already in that orientation.")
     ap.add_argument("--install-adb", action="store_true",
                     help="if adb is needed but missing, offer to install it via this "
                          "platform's package manager. Always asks first.")
@@ -855,6 +860,25 @@ def main():
             saved = sum(i.compress_size for i in zipfile.ZipFile(args.apk).infolist()
                         if i.filename in drop)
             print(f"        -> removing {len(drop)} file(s), saving ~{human(saved)}")
+
+    if args.orientation:
+        import gmtv_axml
+        try:
+            man = zipfile.ZipFile(args.apk).read("AndroidManifest.xml")
+            cur, _vals = gmtv_axml.describe(man)
+            if cur is None:
+                print("\norient: no GameMaker orientation meta-data found -- skipping")
+            else:
+                new_man, changes = gmtv_axml.set_orientation(man, args.orientation)
+                print(f"\norient: {cur} -> {args.orientation}")
+                if changes:
+                    for k, o, n in changes:
+                        print(f"        {k:<24} {o} -> {n}")
+                    patched["AndroidManifest.xml"] = (new_man, zipfile.ZIP_DEFLATED)
+                else:
+                    print("        already set that way -- nothing to change")
+        except Exception as e:
+            die(f"could not rewrite orientation: {e}")
 
     if args.dry_run:
         if args.shrink_audio:

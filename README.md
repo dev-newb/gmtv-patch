@@ -159,6 +159,7 @@ Writes `YourGame-tv.apk`, signed and ready to sideload.
       --dry-run          report what would change, write nothing
       --abis LIST        keep only these ABIs (e.g. armeabi-v7a,armeabi)
       --shrink-audio [K] re-encode Ogg music to K kbps (default 128)
+      --orientation X    landscape | portrait | both — rewrite screen orientation
 ```
 
 ## Making it fit (optional)
@@ -179,7 +180,34 @@ audio : re-encoding to ~128k
 done: 136.8MB      (from 317.5MB, in ~20s)
 ```
 
-### Removing architectures
+### Widescreen: fixing portrait phone games
+
+Many GameMaker games were built portrait-only for phones. On a 16:9 TV they pillarbox
+into a narrow strip down the middle. GameMaker stores orientation as four `<meta-data>`
+ints in the manifest (`-1` = allowed, `0` = not), so flipping them is a **same-size edit**
+— no string-pool surgery, nothing downstream shifts:
+
+```bash
+python3 gmtv-patch.py GridRun.apk --orientation landscape
+```
+
+```
+orient: portrait -> landscape
+        OrientLandscape          0 -> -1
+        OrientPortrait           -1 -> 0
+        OrientLandscapeFlipped   0 -> -1
+        OrientPortraitFlipped    -1 -> 0
+```
+
+The result is better than expected: GameMaker **rebuilds the view for the new aspect**
+rather than stretching it, and the game re-lays out its own UI. Verified on Grid Run — a
+360x640 portrait game — which went from pillarboxed to genuine full-screen widescreen on a
+Google TV Streamer, with correct proportions and no distortion.
+
+Implemented in `gmtv_axml.py`, a deliberately minimal binary-AXML editor that does exactly
+this one operation. No apktool, no JDK.
+
+## Removing architectures
 
 A GameMaker 1.4 APK ships native code for every ABI it was built for, and a given device
 loads exactly one of them. The rest is dead weight you can delete. Start by seeing what is

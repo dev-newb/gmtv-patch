@@ -86,6 +86,8 @@ class App:
         self.abi_mode = tk.StringVar(value="device")
         self.audio_on = tk.BooleanVar(value=False)
         self.bitrate = tk.StringVar(value="128")
+        self.orient = tk.StringVar(value="keep")
+        self.autotools = tk.BooleanVar(value=False)
         self.device = tk.StringVar()
         self.dry = tk.BooleanVar(value=False)
         self.install_after = tk.BooleanVar(value=True)
@@ -128,7 +130,7 @@ class App:
                   ).pack(anchor="w", pady=(6, 0))
 
         # 2. trim
-        f2 = ttk.LabelFrame(body, text=" 2. Make it smaller (optional) ", padding=10)
+        f2 = ttk.LabelFrame(body, text=" 2. Fit it to your TV (optional) ", padding=10)
         f2.pack(fill="x", pady=6)
         ttk.Label(f2, text="Processor architectures:").pack(anchor="w")
         for val, txt in (("device", "Match the selected TV (recommended)"),
@@ -152,6 +154,20 @@ class App:
         ttk.Label(self.audio_box, foreground="#666",
                   text="kbps — tracks already smaller than this are left alone"
                   ).pack(side="left")
+
+        ttk.Separator(f2).pack(fill="x", pady=6)
+        orow = ttk.Frame(f2); orow.pack(fill="x")
+        ttk.Label(orow, text="Screen orientation:").pack(side="left")
+        ttk.Combobox(orow, textvariable=self.orient, width=12, state="readonly",
+                     values=("keep", "landscape", "portrait")).pack(side="left", padx=8)
+        ttk.Label(f2, foreground="#666",
+                  text="Portrait phone games pillarbox on a TV. 'landscape' makes GameMaker "
+                       "rebuild the view for the wider screen (it re-lays out, not stretches)."
+                  ).pack(anchor="w", pady=(4, 0))
+
+        ttk.Separator(f2).pack(fill="x", pady=6)
+        ttk.Checkbutton(f2, text="Install missing helper tools for me (adb / ffmpeg), asking first",
+                        variable=self.autotools).pack(anchor="w")
 
         # 3. device
         f3 = ttk.LabelFrame(body, text=" 3. Your TV (optional) ", padding=10)
@@ -298,6 +314,15 @@ class App:
                 a += ["--abis", ",".join(keep)]
         if self.audio_on.get():
             a += ["--shrink-audio", self.bitrate.get()]
+        if self.orient.get() != "keep":
+            a += ["--orientation", self.orient.get()]
+        if self.autotools.get():
+            # only meaningful alongside the features that need those tools
+            if self.audio_on.get():
+                a.append("--install-ffmpeg")
+            if self.abi_mode.get() == "device":
+                a.append("--install-adb")
+            a.append("--yes")
         # key lives beside the app so re-patches upgrade in place
         a += ["--key", os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmtv-key.pem")]
         return a

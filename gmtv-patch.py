@@ -677,11 +677,20 @@ def build(src, dst, patched, drop=(), signer=None):
 
             name = info.filename.encode("utf-8")
             t, d = dos_time(info)
+            # STORED entries must be aligned for Android to mmap them straight out of
+            # the APK: 4 bytes in general, a full page for shared libraries. Modern
+            # APKs use extractNativeLibs="false" and rely on this.
+            extra = b""
+            if method == zipfile.ZIP_STORED:
+                align = 4096 if info.filename.endswith(".so") else 4
+                head_end = out.tell() + 30 + len(name)
+                extra = b"\x00" * ((align - (head_end % align)) % align)
             offset = out.tell()
             # flags forced to 0: we always write real sizes, never a data descriptor
             out.write(struct.pack("<IHHHHHIIIHH", 0x04034B50, 20, 0, method,
-                                  t, d, crc, csize, usize, len(name), 0))
+                                  t, d, crc, csize, usize, len(name), len(extra)))
             out.write(name)
+            out.write(extra)
             out.write(data)
             central.append((info, name, method, crc, csize, usize, offset))
 
@@ -711,6 +720,28 @@ def ensure_key(path):
     cert, key = gmtv_sign.load_or_create_key(path)
     print(f"  {'using existing' if existed else 'created'} signing key: {path}")
     return cert, key
+
+
+def target_sdk(apk):
+    """Read targetSdkVersion from the binary manifest (0 if unknown)."""
+    try:
+        import gmtv_axml, struct as _st
+        m = zipfile.ZipFile(apk).read("AndroidManifest.xml")
+        pool = gmtv_axml._read_string_pool(m)
+        idx = {v: k for k, v in pool.items()}
+        want = idx.get("targetSdkVersion")
+        if want is None:
+            return 0
+        for _n, ab, asize, acount in gmtv_axml._iter_elements(m):
+            for i in range(acount):
+                a = ab + i * asize
+                _ns, name, _raw = _st.unpack_from("<III", m, a)
+                _vs, _r0, dt, data = _st.unpack_from("<HBBI", m, a + 12)
+                if name == want and dt == 0x10:
+                    return data
+    except Exception:
+        pass
+    return 0
 
 
 def verify_signature(apk):
@@ -828,7 +859,11 @@ def main():
         hits = sum(counts.values())
         abi = name.split("/")[1] if "/" in name else name
         if hits:
-            patched[name] = (new, zipfile.ZIP_DEFLATED)
+            # Preserve the original storage method. Modern APKs ship .so files STORED
+            # (extractNativeLibs="false") so Android can mmap them straight from the
+            # archive; re-deflating them fails the install with
+            # INSTALL_FAILED_INVALID_APK "Failed to extract native libraries".
+            patched[name] = (new, zin.getinfo(name).compress_type)
             total += hits
             detail = ", ".join(f"{n.decode()}x{c}" for n, c in counts.items() if c)
             print(f"        {abi:<14} {hits} constant(s) -> {detail}")
@@ -903,7 +938,22 @@ def main():
     ok, detail = verify_signature(out)
     if not ok:
         die(f"self-check failed: {detail}")
-    print(f"  signed (v1/JAR, SHA-256 RSA) -- self-check: {detail}")
+
+    # Android REQUIRES v2+ for targetSdk >= 30; a v1-only APK is rejected with
+    # INSTALL_PARSE_FAILED_NO_CERTIFICATES. Add v2 when the app needs it (or when
+    # the original had one), so modern APKs install too.
+    tsdk = target_sdk(args.apk)
+    import gmtv_sign_v2
+    needs_v2 = tsdk >= 30 or gmtv_sign_v2.has_v2(args.apk)
+    if needs_v2:
+        try:
+            n = gmtv_sign_v2.sign(out, signer[0], signer[1])
+            print(f"  signed v1 + v2 (targetSdk {tsdk}) -- self-check: {detail}, "
+                  f"v2 block {n} bytes")
+        except Exception as e:
+            die(f"v2 signing failed: {e}")
+    else:
+        print(f"  signed (v1/JAR, SHA-256 RSA) -- self-check: {detail}")
 
     print(f"\ndone: {out}  ({human(os.path.getsize(out))})")
     print("\nThe APK is signed with a new key, so uninstall any existing copy first:")

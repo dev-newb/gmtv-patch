@@ -132,6 +132,50 @@ desk), the only official fix is rebuilding the whole project on a different Game
 version, and so the report is closed with a shrug. Patching the shipped APK sidesteps all
 of that.
 
+## Modern APKs: stored libraries and v2 signatures
+
+Newer GameMaker exports differ from 1.4-era ones in two ways that will break a naive
+patcher. Both are handled automatically.
+
+**Native libraries are stored, not deflated.** Modern APKs set
+`extractNativeLibs="false"` so Android can mmap `.so` files straight out of the archive.
+Re-compressing them fails the install with:
+
+```
+INSTALL_FAILED_INVALID_APK: Failed to extract native libraries, res=-2
+```
+
+So the original storage method is preserved, and STORED `.so` entries are **page-aligned
+to 4096** (4 bytes for anything else) — the same thing `zipalign -p` does.
+
+**v1 signatures are no longer sufficient.** Android requires APK Signature Scheme v2 (or
+newer) for `targetSdk >= 30`; a v1-only package is rejected with:
+
+```
+INSTALL_PARSE_FAILED_NO_CERTIFICATES: No signature found in package of version 2 or newer
+```
+
+`gmtv_sign_v2.py` implements v2 in pure Python: the two-level chunked SHA-256 over the
+three APK regions, an APK Signing Block inserted before the central directory, and the
+EOCD's central-directory offset rewritten to match. It is applied automatically when
+`targetSdk >= 30` or the input already had a v2 block.
+
+One trap worth recording, because Android's error message names it precisely: `digests`
+and `signatures` are *length-prefixed sequences of length-prefixed records* — two levels
+of length prefix, not one. Getting it wrong yields
+`Failed to parse signature record #2: Remaining buffer too short`.
+
+## Games confirmed working
+
+| Game | Engine era | Result |
+|---|---|---|
+| **AM2R 1.5.2** | GMS 1.4, v1, deflated libs | runs; controller support built in |
+| **Grid Run 1.1.0** | GMS 1.4, targetSdk 26 | runs; `--orientation landscape` gives true widescreen; touch-only, needs a mouse |
+| **Spelunky Classic HD** | targetSdk 35, arm64, v2, stored libs | runs; **has a full GAMEPAD CONFIGURATION menu** |
+
+Two of the three already had working controller support — the TV gate was the only thing
+preventing anyone from ever reaching it.
+
 ## Verified on
 
 | Device | Android | Result |

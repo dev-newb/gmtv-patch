@@ -1,0 +1,401 @@
+# gmtv-patch
+
+Make a **GameMaker Studio 1.4** Android APK run on **Android TV** (NVIDIA Shield, etc.).
+
+Ships no game data and no GameMaker runtime — it patches a copy you already have.
+
+## The problem
+
+GameMaker Studio 1.4 games refuse to start on Android TV devices, dying on the title
+screen or at boot with:
+
+```
+FATAL ERROR in
+action number 1
+of <Unknown Event>
+for object oTestKeys:
+
+Incorrect Android target... this executable targets Android TV devices.
+This build is for Android
+```
+
+This has been an open question for years. The two places people asked:
+
+- [XDA, Nov 2018](https://xdaforums.com/t/help-request-am2r-game-dont-work-on-android-tv-how-to-fool-it.3872253/) —
+  three posts, all by the person asking, **zero replies**, ending "So no solution? :/"
+- [GameMaker Community, 2017](https://forum.gamemaker.io/index.php?threads/apk-does-not-work-on-nvidia-shield-solved.26994/) —
+  marked `[solved]`, but the solution is *rebuild the project* on GMS 1.4.1657 (pre-Gradle).
+  Russell Kay of YoYo Games confirms in-thread: "1.x does not support Android TV but 2.x does."
+
+Both documented fixes need the original project. Neither helps if you have only an APK.
+
+## Why everyone was stuck
+
+The check is **not in `AndroidManifest.xml`**. That is where people looked — hunting for
+`leanback` intent filters, OUYA/TV categories, `uses-feature` entries — and it is why
+generic "Android TV-ify an APK" repackagers don't help either. Those add launcher banners
+and leanback categories, so the app *appears* in the TV launcher and then dies exactly as
+before.
+
+The gate is compiled into the native runner, `lib/<abi>/libyoyo.so`. The runner calls:
+
+```java
+PackageManager.hasSystemFeature("android.software.leanback")
+```
+
+and if the device says yes (or `Build.MANUFACTURER` is `AMAZON`), it concludes it is on a
+TV and refuses, because the package was built for the plain `Android` target.
+
+It also fires more than once, from different game objects — first at boot, later from
+others — so it is not a single startup check you can step past.
+
+## The fix
+
+The gate has **two** conditions OR'd together:
+
+```c
+isTV = hasSystemFeature("android.software.leanback")  ||  Build.MANUFACTURER == "AMAZON"
+```
+
+You can read them straight out of `.rodata`, in order:
+
+```
+android.software.leanback          <- condition 1
+android.software.leanback = %d     <- log format
+android/os/Build
+MANUFACTURER
+Ljava/lang/String;
+MANUFACTURER = %s                  <- log format
+AMAZON                             <- condition 2
+```
+
+Both are neutralised by corrupting the constant so the comparison can never match:
+
+```
+android.software.leanback  ->  android.software.leanbacz
+AMAZON                     ->  AMAZOZ
+```
+
+`hasSystemFeature()` finds nothing, `MANUFACTURER` never equals `AMAZOZ`, the runner
+concludes it is on an ordinary Android device, and the game boots. Each replacement is
+the same length as its original, so nothing shifts — no offsets, no relocations, no code
+changes. **Two bytes per ABI.**
+
+Patching only the first condition is enough for Shield and Bravia but leaves **Amazon
+Fire TV still blocked** — Fire devices report the leanback feature inconsistently, which
+is presumably why YoYo added the explicit vendor check.
+
+**Only whole strings are touched** — a constant is rewritten only if it is both
+NUL-terminated and NUL-preceded. That precision matters twice over:
+
+- `"android.software.leanback"` also appears inside the log format string
+  `"android.software.leanback = %d\n"`, which is left alone
+- `"AMAZON"` must not be confused with the unrelated GameMaker OS constant `"os_amazon"`
+
+Leaving both format strings intact preserves the diagnostics that tell you the patch
+worked:
+
+```
+I/yoyo: android.software.leanback = 0      <- 0 means the patch is live
+I/yoyo: MANUFACTURER = NVIDIA
+```
+
+## Verified on
+
+| Device | Android | Result |
+|---|---|---|
+| NVIDIA SHIELD Android TV (2017, `mdarcy`) | 11 | runs, 59.8 fps |
+| Sony BRAVIA 4K VH2 | 12 | runs |
+| Chromecast with Google TV 4K (`sabrina`) | **14** | runs — incl. pure-Python signature |
+| Amazon Fire TV | — | **untested** — the `AMAZON` fix is derived from the binary, not confirmed on hardware |
+
+One patched APK covers all of them; there is no per-device variant. Differences in
+package *size* (stripping unused ABIs, re-encoding audio) are storage decisions for a
+particular device, not different patches.
+
+## Usage
+
+```bash
+python3 gmtv-patch.py YourGame.apk
+```
+
+Writes `YourGame-tv.apk`, signed and ready to sideload.
+
+```
+  -o, --output FILE      output path (default: <name>-tv.apk)
+      --key FILE         signing key (PEM), created if missing (default: gmtv-key.pem)
+      --dry-run          report what would change, write nothing
+      --abis LIST        keep only these ABIs (e.g. armeabi-v7a,armeabi)
+      --shrink-audio [K] re-encode Ogg music to K kbps (default 128)
+```
+
+## Making it fit (optional)
+
+Some TVs have very little free space — a Sony BRAVIA VH2 had **382 MB free on a 4 GB
+partition**, and Android needs roughly twice the APK size during a streamed install. Two
+flags address that without touching a single one of the user's own apps:
+
+```bash
+python3 gmtv-patch.py AM2R.apk --abis armeabi-v7a,armeabi --shrink-audio 128
+```
+
+```
+abis  : keeping ['armeabi', 'armeabi-v7a'], dropping ['mips', 'x86'] (4 files, ~13.7MB)
+audio : re-encoding to ~128k
+  encoder: oggdec | oggenc
+  46/46 tracks re-encoded at ~128k: 231.9MB -> 64.9MB
+done: 136.8MB      (from 317.5MB, in ~20s)
+```
+
+### Removing architectures
+
+A GameMaker 1.4 APK ships native code for every ABI it was built for, and a given device
+loads exactly one of them. The rest is dead weight you can delete. Start by seeing what is
+in there and what each costs:
+
+```bash
+python3 gmtv-patch.py AM2R.apk --list-abis
+```
+
+```
+abis  : 4 architecture(s), 28.7MB of native code
+        armeabi        2 file(s)     7.8MB   27.3%   keep
+        armeabi-v7a    2 file(s)     7.1MB   24.7%   keep
+        x86            2 file(s)     6.9MB   24.1%   keep
+        mips           2 file(s)     6.8MB   23.8%   keep
+
+  What these are:
+
+    armeabi-v7a  --  keep
+          32-bit ARM with hardware floating point. The workhorse of the 2010s,
+          from the Nexus One era onward. This is the one most Android TV boxes and
+          TVs actually load from a 32-bit-only APK like this -- both the NVIDIA
+          Shield and Sony BRAVIA run it.
+
+    armeabi  --  usually safe to drop
+          ARMv5TE with software floating point -- Android's launch-era baseline,
+          roughly 2008-2011. Removed from the Android NDK in r17 (2018). ...
+
+    x86  --  drop unless you use an emulator
+          32-bit Intel Atom. Briefly shipped in phones such as the Motorola Razr i
+          (2012) and Asus ZenFone 2 (2015) before Intel left the mobile market in
+          2016. ...
+
+    mips  --  safe to drop
+          MIPS. Never caught on in consumer Android -- a handful of budget tablets
+          and set-top boxes. Removed from the Android NDK in r17 (2018).
+
+  Check what your device needs:
+      adb shell getprop ro.product.cpu.abilist
+```
+
+Each architecture present gets a verdict and a sentence or two of context — what era of
+hardware used it, the best-known devices that shipped it, and whether it is dead — so
+"can I delete this?" is answerable without going and looking it up. `arm64-v8a` and
+`x86_64` are covered too, for APKs that carry them.
+
+Then remove what you don't need — either form works, whichever reads better to you:
+
+```bash
+--drop-abis mips,x86              # remove these
+--abis armeabi-v7a,armeabi        # or equivalently, keep only these
+```
+
+They are mutually exclusive, and the selection is validated **before** anything is
+written, so `--dry-run` catches mistakes:
+
+- naming an ABI the APK doesn't contain → error, listing what *is* present
+- selecting a set that would remove every ABI → refused, since that leaves an APK with no
+  native code at all
+- passing both flags → error
+
+Neither needs any extra tools; it is pure zip surgery. Note `mips` was discontinued by
+Google years ago and `armeabi` is pre-2012 — on anything modern, `--drop-abis mips,x86`
+is usually free money.
+
+`--shrink-audio` is where the real win is: AM2R ships 46 music tracks at **~500 kbps**,
+which is **76% of the entire APK** and far beyond what a 2D game needs. Re-encoded tracks
+stay 44.1 kHz stereo Vorbis and are stored uncompressed in the zip (Ogg is already
+compressed, so deflating it is wasted work). This *is* a real change to the game's audio —
+lossy re-encoding of already-lossy source — so it is opt-in, never automatic.
+
+### Encoder availability
+
+**No platform ships an Ogg Vorbis encoder by default.** Unlike MP3 and AAC, Vorbis has no
+OS-level codec on macOS, Windows, or a stock Linux desktop — macOS's built-in `afconvert`
+cannot produce it, and neither can Windows Media Foundation. Even installing `ffmpeg` is
+not a guarantee: many builds omit `libvorbis` (Homebrew's did, on the machine this was
+developed on).
+
+So the tool probes, in order of quality, and tells you exactly what to install if it finds
+nothing:
+
+| # | Method | Notes |
+|---|---|---|
+| 1 | `ffmpeg` + `libvorbis` | best quality; absent from many ffmpeg builds |
+| 2 | `oggdec \| oggenc` | vorbis-tools. `oggenc` cannot read Ogg, hence the `oggdec` decode stage |
+| 3 | `ffmpeg` native `vorbis` | experimental (`-strict -2`), less efficient, but built into essentially **every** ffmpeg |
+
+Method 3 is the safety net that makes this practical: anyone who has ffmpeg at all can use
+`--shrink-audio`, whether or not their build includes `libvorbis`. It costs some size.
+
+Measured on one track, both asked for `-b:a 128k`:
+
+| | file | actual bitrate | 16–20 kHz vs source |
+|---|---|---|---|
+| `oggenc` | 1,076,717 B | 106.4 kbps | −2.1 dB |
+| native | 1,313,715 B | 129.8 kbps | −3.6 dB |
+
+Below 16 kHz both are within ±0.6 dB of the source — inaudible on TV speakers. The real
+difference is efficiency: native needs ~22% more bits and still tracks the source slightly
+less closely. Across all 46 tracks that is roughly 65 MB vs 79 MB, which matters when the
+whole point is fitting a tight partition.
+
+```
+macOS    brew install ffmpeg          (or: brew install vorbis-tools)
+Linux    sudo apt install ffmpeg      (or: vorbis-tools)
+Windows  winget install Gyan.FFmpeg   (or scoop/choco install ffmpeg)
+```
+
+### Letting the tool install it
+
+`--install-ffmpeg` offers to do that for you when no encoder is found:
+
+```bash
+python3 gmtv-patch.py AM2R.apk --shrink-audio 128 --install-ffmpeg
+```
+
+```
+  No Ogg Vorbis encoder found on this system.
+  winget is available and can install ffmpeg:
+
+      winget install --id Gyan.FFmpeg -e --accept-source-agreements --accept-package-agreements
+
+  Note: winget puts ffmpeg on PATH for NEW shells -- reopen your terminal
+  afterwards, then re-run this command.
+
+  Run it now? [y/N]
+```
+
+Detected per platform: **brew** (macOS), **winget → scoop → choco** (Windows),
+**apt → dnf → pacman → zypper → apk** (Linux).
+
+The rules it follows, because a tool that installs software deserves them:
+
+- **Package managers only.** It never downloads a binary from a URL, and never
+  bootstraps a package manager itself — no `curl | sh` to install Homebrew.
+- **The exact command is printed before anything runs.** No hidden arguments.
+- **It asks, and defaults to no.** `--yes` skips the prompt for CI.
+- **It refuses to prompt when stdin isn't a terminal**, so a piped or scripted run can
+  never silently install something. It errors and tells you to pass `--yes` instead.
+- **`--dry-run` never installs and never encodes.**
+- Linux commands are shown with `sudo` and run under it, so the password prompt is the
+  system's own, not something this tool handles.
+
+If no supported package manager is present it just prints the manual instructions and
+stops.
+
+Then:
+
+```bash
+adb connect <device-ip>:5555
+adb uninstall <package>          # required: the new signature won't upgrade in place
+adb install YourGame-tv.apk
+```
+
+Keep the generated keystore. Re-patching with the same key upgrades in place, no
+uninstall and no lost saves.
+
+## Requirements
+
+- **Python 3.8+ and the `cryptography` package.** That is the whole hard requirement.
+- **No JDK.** APK v1 (JAR) signing is implemented in pure Python in `gmtv_sign.py`.
+
+Optional, only for optional features:
+
+| Tool | Needed for | If missing |
+|---|---|---|
+| `adb` | `--from-device`, installing to a TV | `--install-adb` offers to install it |
+| `ffmpeg` / `vorbis-tools` | `--shrink-audio` | `--install-ffmpeg` offers to install it |
+
+## Signing
+
+Every patched APK must be re-signed, because changing one byte invalidates the original
+signature. This used to shell out to the JDK's `jarsigner`; it is now pure Python, which
+removes the single worst dependency for non-technical users — nobody has a JDK, and
+telling them to install one loses them.
+
+The implementation writes the three v1 signature files:
+
+```
+META-INF/MANIFEST.MF   per-entry SHA-256 of the *uncompressed* content
+META-INF/CERT.SF       SHA-256 of the manifest, and of each manifest section
+META-INF/CERT.RSA      detached PKCS#7 signature over CERT.SF
+```
+
+The fiddly parts, all handled: CRLF line endings, a blank line terminating every section,
+no line exceeding 72 bytes (longer ones wrap with a leading space), and each section's SF
+digest covering that section's *exact* bytes including its trailing blank line.
+
+Digests are computed by streaming, so a 300 MB archive never lands in memory at once.
+After writing, the tool re-opens the finished APK, recomputes every digest, and compares
+against what it claimed — a real self-check, not a formality.
+
+**Verified three independent ways:**
+
+1. The JDK's own `jarsigner -verify` reports `jar verified.`
+2. Android 14 (Chromecast with Google TV) installs and runs it
+3. Re-patching with the same key installs *over* the previous build with no uninstall,
+   which is what preserves save files
+
+The key is a single PEM (`gmtv-key.pem`, key + self-signed cert) created on first run.
+Keep it: same key means in-place upgrades; a new key forces an uninstall and loses saves.
+
+## Desktop app
+
+`gmtv_gui.py` is a Tkinter front end — standard library, so a PyInstaller bundle needs no
+extra runtime. It *imports* the patcher rather than shelling out to `python3`, which
+matters once frozen: there is no interpreter on the user's PATH to call.
+
+```bash
+pyinstaller --onefile --windowed --name "AM2R TV Patcher" \
+    --add-data "gmtv-patch.py:." --add-data "gmtv_sign.py:." gmtv_gui.py
+```
+
+The result is one file the user double-clicks. No Python, no Java, nothing to install.
+
+## Notes
+
+- Patches **every** ABI present (`armeabi`, `armeabi-v7a`, `mips`, `x86`), so x86 Android
+  TV boxes and emulators are covered too.
+- Untouched entries are copied as **raw compressed bytes** rather than recompressed. A
+  318 MB APK repacks in about 20 seconds, and every non-runner entry stays byte-identical
+  to the input.
+- Old `META-INF/` signatures are dropped and replaced. GameMaker 1.4 packages target old
+  SDKs, so a v1 (JAR) signature is accepted. SHA-256 is used because modern JDKs refuse
+  to sign with SHA-1.
+- **Install failing with `INSTALL_FAILED_VERIFICATION_FAILURE`?** Play Protect rejects
+  re-signed sideloads silently, with no prompt on screen. Turn it off (Play Store →
+  Settings → Play Protect), install, then turn it back on.
+
+## What this does not fix
+
+- **Controller support on the title screen.** Some games gate "touch to start" on a real
+  touch event. The rest of the game may be fine on a gamepad.
+- **On-screen touch controls.** Games that auto-hide them when a controller is detected
+  will behave correctly; others will keep drawing them.
+- **32-bit only.** GameMaker 1.4 never shipped an arm64 runner, so these games run under
+  32-bit ARM translation on modern devices. Not patchable — needs a rebuild.
+- **Launcher placement.** No `LEANBACK_LAUNCHER` category or TV banner is added, since
+  that means rebuilding resources. Launch from the "sideloaded apps" area, or use a
+  separate banner tool.
+
+## Legal
+
+This tool contains no copyrighted game content and no GameMaker runtime. It modifies a
+file you supply.
+
+Whether you may *redistribute* a patched APK is an entirely separate question, and for
+most games the answer is no — the GameMaker runtime inside is proprietary to YoYo Games,
+and the game itself is its author's (or, for fan games, someone else's IP altogether).
+Patch your own copy; don't hand out the result.

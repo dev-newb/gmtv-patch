@@ -20,9 +20,12 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 APP_TITLE = "Android TV Patcher"
+GITHUB_URL = "https://github.com/dev-newb"
+LOGO_MAX_H = 64          # logo is scaled down by whole-integer subsampling only
 
 
 # ---------------------------------------------------------------- patcher import
@@ -94,6 +97,8 @@ class App:
         self.abi_vars = {}
         self.devices = []
         self.busy = False
+        self.sidecar = None       # detached console Toplevel
+        self.log_sinks = []       # every Text widget that mirrors output
         self._build()
         # Everything that shells out (adb, ffmpeg) runs off the main thread AFTER the
         # first paint. Probing during construction leaves the user staring at an empty
@@ -102,6 +107,29 @@ class App:
         self.root.after(80, self._drain)
         self.root.after(120, self.refresh_devices)
         self.root.after(120, self._probe_tools)
+
+    def _load_logo(self):
+        """Load assets/logo.png if present. Missing logo is not an error."""
+        # Prefer a pre-scaled asset: Tk's PhotoImage can only shrink by whole
+        # integers, so downscaling a ~1000px original leaves it coarse.
+        base = os.path.join(_base_dir(), "assets")
+        path = None
+        for name in ("logo_header.png", "logo.png"):
+            cand = os.path.join(base, name)
+            if os.path.exists(cand):
+                path = cand
+                break
+        if path is None:
+            return None
+        try:
+            img = tk.PhotoImage(file=path)
+        except Exception:
+            return None                      # unsupported format; just skip the logo
+        # PhotoImage can only shrink by integer factors, so pick the smallest
+        # factor that fits the target height.
+        if img.height() > LOGO_MAX_H:
+            img = img.subsample(max(1, round(img.height() / LOGO_MAX_H)))
+        return img
 
     # ---- layout
     def _build(self):
@@ -112,8 +140,22 @@ class App:
 
         head = ttk.Frame(r, padding=(14, 12, 14, 6))
         head.pack(fill="x")
-        ttk.Label(head, text=APP_TITLE, font=("", 16, "bold")).pack(anchor="w")
-        ttk.Label(head, foreground="#666",
+
+        # right side first so it keeps its width when the title text is long
+        brand = ttk.Frame(head)
+        brand.pack(side="right", anchor="ne")
+        self._logo_img = self._load_logo()
+        if self._logo_img is not None:
+            ttk.Label(brand, image=self._logo_img).pack(anchor="e")
+        link = ttk.Label(brand, text="github.com/dev-newb", foreground="#4a90d9",
+                         cursor="pointinghand")
+        link.pack(anchor="e", pady=(2, 0))
+        link.bind("<Button-1>", lambda _e: webbrowser.open(GITHUB_URL))
+
+        titles = ttk.Frame(head)
+        titles.pack(side="left", anchor="nw")
+        ttk.Label(titles, text=APP_TITLE, font=("", 16, "bold")).pack(anchor="w")
+        ttk.Label(titles, foreground="#666",
                   text="Make a GameMaker game run on Android TV, Fire TV, Shield and Google TV."
                   ).pack(anchor="w")
 
@@ -176,6 +218,7 @@ class App:
         self.dev_combo = ttk.Combobox(row, textvariable=self.device, state="readonly")
         self.dev_combo.pack(side="left", fill="x", expand=True)
         ttk.Button(row, text="Rescan", command=self.refresh_devices).pack(side="left", padx=(8, 0))
+        ttk.Button(row, text="Scan network…", command=self.scan_network).pack(side="left", padx=(6, 0))
         ttk.Checkbutton(f3, text="Install to it when finished",
                         variable=self.install_after).pack(anchor="w", pady=(6, 0))
         self.dev_info = ttk.Label(f3, foreground="#666", text="")
@@ -183,6 +226,7 @@ class App:
 
         # actions
         act = ttk.Frame(body); act.pack(fill="x", pady=(10, 4))
+        ttk.Button(act, text="Console ⧉", command=self.toggle_sidecar).pack(side="right", padx=(0, 8))
         self.go_btn = ttk.Button(act, text="Patch", command=self.run)
         self.go_btn.pack(side="left")
         ttk.Checkbutton(act, text="Preview only (write nothing)",
@@ -198,6 +242,7 @@ class App:
         sb = ttk.Scrollbar(f4, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y"); self.log.pack(fill="both", expand=True)
+        self.log_sinks.append(self.log)
         self.log.tag_config("err", foreground="#f0907e")
         self.log.tag_config("ok", foreground="#7fd39b")
 
@@ -283,8 +328,65 @@ class App:
         threading.Thread(target=work, daemon=True).start()
 
     def write(self, text, tag=None):
-        self.log.insert("end", text, tag or ())
-        self.log.see("end")
+        """Mirror output to the main log and to the detached console, if open."""
+        for sink in list(self.log_sinks):
+            try:
+                sink.insert("end", text, tag or ())
+                sink.see("end")
+            except tk.TclError:
+                self.log_sinks.remove(sink)     # window was closed underneath us
+
+    def toggle_sidecar(self):
+        """Open/close a separate console window that mirrors the log.
+
+        Useful on a small main window, and for screen-sharing the output next to
+        the app rather than scrolling a short pane.
+        """
+        if self.sidecar is not None:
+            self._close_sidecar()
+            return
+        win = tk.Toplevel(self.root)
+        win.title(APP_TITLE + " — console")
+        win.geometry("860x520")
+        txt = tk.Text(win, wrap="word", font=("Menlo", 11),
+                      background="#111318", foreground="#cfd3dd", insertbackground="#fff")
+        sb = ttk.Scrollbar(win, command=txt.yview)
+        txt.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y"); txt.pack(fill="both", expand=True)
+        txt.tag_config("err", foreground="#f0907e")
+        txt.tag_config("ok", foreground="#7fd39b")
+        txt.insert("end", self.log.get("1.0", "end"))   # carry over what already happened
+        txt.see("end")
+        self.log_sinks.append(txt)
+        self._sidecar_text = txt
+        win.protocol("WM_DELETE_WINDOW", self._close_sidecar)
+        self.sidecar = win
+
+    def _close_sidecar(self):
+        """Single teardown path, so the button and the window's X behave identically."""
+        txt = getattr(self, "_sidecar_text", None)
+        if txt is not None and txt in self.log_sinks:
+            self.log_sinks.remove(txt)
+        self._sidecar_text = None
+        if self.sidecar is not None:
+            self.sidecar.destroy()
+            self.sidecar = None
+
+    def scan_network(self):
+        """Sweep the LAN for Android devices with adb open, off the main thread."""
+        self.dev_info.configure(text="scanning the network…")
+        self.write("\nscanning local network for Android devices…\n", "ok")
+        def work():
+            try:
+                sys.path.insert(0, _base_dir())
+                import gmtv_scan
+                found = gmtv_scan.discover(
+                    progress=lambda d, t: self.q.put(("scanprog", d, t)))
+            except Exception as e:
+                self.q.put(("log", f"scan failed: {e}\n", "err"))
+                found = []
+            self.q.put(("scandone", found))
+        threading.Thread(target=work, daemon=True).start()
 
     def run(self):
         if self.busy:
@@ -384,6 +486,22 @@ class App:
                 if kind == "log":
                     text, tag = rest
                     self.write(text, tag)
+                elif kind == "scanprog":
+                    d, t = rest
+                    self.dev_info.configure(text=f"scanning… {d}/{t} addresses")
+                elif kind == "scandone":
+                    found = rest[0]
+                    if not found:
+                        self.write("no Android devices found with adb reachable.\n"
+                                   "  TVs need adb enabled: Settings > About > tap Build 7x,\n"
+                                   "  then Developer options > Network/Wireless debugging.\n", "err")
+                        self.dev_info.configure(text="nothing found — is adb enabled on the TV?")
+                    else:
+                        for d in found:
+                            self.write(f"  found {d['model']}  {d['target']}\n"
+                                       f"    Android {d['release']} (SDK {d['sdk']})  {d['abilist']}\n", "ok")
+                        self.dev_info.configure(text=f"found {len(found)} device(s)")
+                        self.refresh_devices()
                 elif kind == "env":
                     self.envbar.configure(text=rest[0])
                 elif kind == "devinfo":

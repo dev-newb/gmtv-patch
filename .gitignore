@@ -18,3 +18,6 @@ dist/
 
 # OS
 .DS_Store
+
+# keep the full-res logo master local; ship only the scaled header asset
+assets/logo.png

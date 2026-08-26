@@ -87,11 +87,115 @@ doesn't add features — it unlocks work the original developers had already don
 
 ---
 
+## The other half: signing it back up
+
+Changing one byte inside an APK invalidates its signature, and Android will not
+install an unsigned package. The usual answer is to shell out to `jarsigner`, which
+means anyone running the tool needs a JDK installed — a few hundred megabytes of
+Java to change two bytes of a `.so`. So both signature schemes are implemented here
+directly, in Python, with `cryptography` doing nothing but RSA and SHA-256.
+
+### v1 — JAR signing
+
+Three files, and it is a *text* format, which is where the traps are:
+
+| file | contents |
+|---|---|
+| `META-INF/MANIFEST.MF` | SHA-256 of each entry's **uncompressed** content |
+| `META-INF/CERT.SF` | SHA-256 of the whole manifest, plus one per manifest section |
+| `META-INF/CERT.RSA` | detached PKCS#7 over CERT.SF — DER, binary, no signed attributes |
+
+- CRLF endings throughout, and a blank line terminates every section.
+- No line may exceed **72 bytes of UTF-8**. Longer ones wrap onto a continuation
+  line beginning with a space — so a continuation carries 71 bytes, not 72. Entry
+  names in a GameMaker APK routinely run past this.
+- CERT.SF's per-entry digest is over that manifest section's **exact bytes**,
+  trailing blank line included. You cannot rebuild the section later to hash it;
+  the emitted bytes have to be kept as they were written.
+
+Digests are streamed a megabyte at a time — AM2R is a 333 MB archive, and holding
+every uncompressed entry in memory to hash it is not an option.
+
+### v2 — APK Signature Scheme v2
+
+Anything targeting SDK 30 or newer is rejected outright with a v1-only signature:
+
+```
+INSTALL_PARSE_FAILED_NO_CERTIFICATES: No signature found in package of
+version 2 or newer
+```
+
+v2 is written whenever the app targets SDK 30+, and also whenever the original
+already carried one, so a v2 APK never comes back downgraded. It does not sign
+entries. It signs **the file itself**, as three regions, digested in 1 MB chunks:
+
+```
+[ entries ][ APK Signing Block ][ central directory ][ EOCD ]
+  region 1                        region 2            region 3
+
+chunk digest = SHA256( 0xa5 || uint32le(chunk_len) || chunk_bytes )
+final digest = SHA256( 0x5a || uint32le(chunk_count) || all chunk digests )
+```
+
+The signing block is inserted *between* regions 1 and 2, which shifts the central
+directory — so the EOCD's "offset of central directory" has to be rewritten. The
+circularity is resolved by a rule in the spec: digest the EOCD with that field
+still pointing at the original offset, then write the real one afterwards.
+
+The bug that cost the most time was a missing level of nesting. Every field in
+the block is a *length-prefixed sequence of length-prefixed records* — **two**
+prefixes, not one. With a single prefix Android reads past the only record present
+and reports a second one that was never there:
+
+```
+Failed to parse signature record #2: Remaining buffer too short
+```
+
+### And the zip has to survive it
+
+Signing only holds if the archive is rebuilt byte-faithfully. Two failures came
+from getting that wrong:
+
+- Re-deflating entries the original had **stored** breaks `extractNativeLibs="false"`
+  packages — `INSTALL_FAILED_INVALID_APK: Failed to extract native libraries`. The
+  original compression method of every entry is preserved.
+- Stored `.so` entries must start on a **4096-byte page boundary**, so they can be
+  mapped straight out of the APK. Alignment padding goes in each local header's
+  extra field.
+
+### How it was checked
+
+Every run ends by verifying its own output. The finished APK is reopened, each
+entry's SHA-256 is recomputed from what was actually written, continuation lines
+are unfolded, and the result is compared against `MANIFEST.MF`. A mistake in the
+wrap logic or the zip writer surfaces here rather than on the TV:
+
+```
+$ gmtv-patch.py AM2R-1.5.2.apk
+signing
+  using existing signing key: gmtv-key.pem
+writing AM2R-1.5.2-tv.apk
+  132 entries copied, 3 entr(y/ies) removed
+  signed v1 + v2 (targetSdk 23) -- self-check: 132 entries verified, v2 block 3662 bytes
+
+done: AM2R-1.5.2-tv.apk  (317.3MB)
+```
+
+That is 333 MB rewritten, digested twice and signed twice, in about eleven seconds.
+
+Not checked against `jarsigner`: the entire point was to stop needing a JDK, and
+there is no Java runtime on the machine this was built on. The verification that
+counts is Android's own installer — these APKs install and run on four devices
+spanning Android 11 to 14, including a targetSdk 35 package the platform refuses
+outright unless the v2 block parses exactly right.
+
+---
+
 ## Features
 
-**No JDK required.** APK signing is implemented in pure Python — both v1 (JAR) and v2
-(APK Signature Scheme v2). Verified against the JDK's own `jarsigner`, and by installing
-on Android 14.
+**No JDK required.** Both signature schemes are implemented in pure Python — see
+[the section above](#the-other-half-signing-it-back-up). The tool needs an
+interpreter and `cryptography`, nothing else.
 
 **Works across both GameMaker eras.** Old APKs (deflated libraries, v1 signatures) and
 modern ones (stored + page-aligned libraries, v2 signatures, targetSdk 35) both work.

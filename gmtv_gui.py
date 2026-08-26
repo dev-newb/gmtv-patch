@@ -21,12 +21,29 @@ import sys
 import threading
 import tkinter as tk
 import webbrowser
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 APP_TITLE = "Android TV Patcher"
 GITHUB_URL = "https://github.com/dev-newb"
-LOGO_MAX_H = 64
-DRAWER_W = 460           # px the window grows by when the console is attached          # logo is scaled down by whole-integer subsampling only
+LOGO_MAX_H = 56
+START_W = 980            # opening width; form + console both fit with no clipping
+
+# Grey explanatory text sits a point below the control labels: it reads as
+# secondary, which is what it is, and the smaller face buys back real estate on
+# both axes without dropping a word of guidance. The size is derived from
+# TkDefaultFont rather than hardcoded -- that font is 10pt on macOS but larger
+# elsewhere, so a literal size can come out BIGGER than what it sits beneath.
+
+# ttk.PanedWindow panes take only a -weight, with no per-pane minimum, so a
+# window resize can squeeze either side to nothing: the form pane starves until
+# "Browse…" collapses to an empty square, or the console vanishes entirely.
+FORM_MIN = 300           # entry + Browse, and the widest control row, still usable
+CONSOLE_MIN = 150        # enough to read a wrapped log line
+
+
+def hint_font():
+    base = tkfont.nametofont("TkDefaultFont")
+    return (base.actual("family"), max(8, base.actual("size") - 1))
 
 
 # ---------------------------------------------------------------- patcher import
@@ -82,7 +99,7 @@ def adb_devices():
 # ---------------------------------------------------------------- the app
 
 class App:
-    DRAWER_W = DRAWER_W
+    START_W = START_W
 
     def __init__(self, root):
         self.root = root
@@ -107,38 +124,157 @@ class App:
         # window for as long as those subprocesses take -- which is exactly what a
         # disconnected TV or a slow ffmpeg makes happen.
         self.root.after(0, self._fit_window)
+        self.root.after(1, self._register_wrapping)
         self.root.after(80, self._drain)
         self.root.after(120, self.refresh_devices)
         self.root.after(120, self._probe_tools)
 
-    def _fit_window(self):
-        """Open at a size where every option is already visible.
+    def _register_wrapping(self):
+        """Find the muted description labels and make them reflow on resize.
 
-        Tk knows what each widget needs (winfo_reqheight), so ask rather than
-        guess: nobody should have to resize the window to reach a control that
-        was supposed to be on screen from the start.
+        ttk.Label never wraps on its own -- without a wraplength it just gets
+        clipped by a narrow pane, which is why text vanished when the window was
+        made small. wraplength is a fixed pixel value, so it has to be recomputed
+        whenever the pane width changes.
+        """
+        self._wrap_labels = []
+        self._full_width = {self.tagline, self.envbar}
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, ttk.Label) and c not in self._full_width:
+                    try:
+                        if str(c.cget("foreground")) == "#666":
+                            self._wrap_labels.append(c)
+                    except tk.TclError:
+                        pass
+                walk(c)
+
+        walk(self.root)
+        form = self.root.nametowidget(self.paned.panes()[0])
+        form.bind("<Configure>", self._rewrap)
+        self.root.bind("<Configure>", self._rewrap_status)
+        self._rewrap()
+        self._rewrap_status()
+
+    def _layout_abis(self, cols):
+        """Re-grid the ABI checkboxes into `cols` columns."""
+        if getattr(self, "_abi_cols", None) == cols:
+            return
+        self._abi_cols = cols
+        for i, cb in enumerate(self._abi_boxes):
+            cb.grid_forget()
+            cb.grid(row=i // cols, column=i % cols, sticky="w", padx=(0, 10), pady=0)
+
+    def _clamp_sash(self, event=None):
+        """Keep both panes usable when the window is dragged narrow.
+
+        Only nudges the sash when it is already out of bounds, so dragging it
+        by hand anywhere in the legal range is left alone.
+        """
+        try:
+            total = self.paned.winfo_width()
+            if total < 50:                       # not laid out yet
+                return
+            lo = min(FORM_MIN, max(120, total - CONSOLE_MIN))
+            hi = max(lo, total - CONSOLE_MIN)
+            pos = self.paned.sashpos(0)
+            if pos < lo:
+                self.paned.sashpos(0, lo)
+            elif pos > hi:
+                self.paned.sashpos(0, hi)
+        except tk.TclError:
+            pass
+
+    def _rewrap_status(self, event=None):
+        """The status bar spans the window, so it wraps to the window."""
+        try:
+            self.envbar.configure(wraplength=max(200, self.root.winfo_width() - 24))
+        except tk.TclError:
+            pass
+
+    def _rewrap_head(self, event=None):
+        """Wrap the tagline against the space left of the logo block."""
+        try:
+            avail = (event.width if event is not None else self._head.winfo_width())
+            avail -= self._brand.winfo_reqwidth() + 34
+            self.tagline.configure(wraplength=max(150, avail))
+        except (tk.TclError, AttributeError):
+            pass
+
+    def _layout_devrow(self, rows):
+        """One row when there is width for it, two when there is not."""
+        if self._dev_rows == rows:
+            return
+        self._dev_rows = rows
+        for w in (self.dev_combo, self.btn_rescan, self.btn_scan):
+            w.grid_forget()
+        if rows == 1:
+            self.dev_combo.grid(row=0, column=0, sticky="ew")
+            self.btn_rescan.grid(row=0, column=1, padx=(6, 0))
+            self.btn_scan.grid(row=0, column=2, padx=(4, 0))
+            self.dev_grid.columnconfigure(0, weight=1)
+            self.dev_grid.columnconfigure(2, weight=0)
+        else:
+            self.dev_combo.grid(row=0, column=0, columnspan=2, sticky="ew")
+            self.btn_rescan.grid(row=1, column=0, sticky="w", pady=(4, 0))
+            self.btn_scan.grid(row=1, column=1, sticky="w", padx=(4, 0), pady=(4, 0))
+            self.dev_grid.columnconfigure(0, weight=1)
+            self.dev_grid.columnconfigure(2, weight=0)
+
+    def _rewrap(self, event=None):
+        """Reflow descriptions to the current pane width."""
+        try:
+            form = self.root.nametowidget(self.paned.panes()[0])
+        except (tk.TclError, IndexError):
+            return
+        width = (event.width if event is not None else form.winfo_width())
+        avail = max(140, width - 84)          # LabelFrame padding + indent + slack
+        for lbl in getattr(self, "_wrap_labels", []):
+            try:
+                lbl.configure(wraplength=avail)
+            except tk.TclError:
+                pass
+        if getattr(self, "_abi_boxes", None):
+            self._layout_abis(3 if width >= 385 else 2)
+        if getattr(self, "dev_grid", None):
+            self._layout_devrow(1 if width >= 410 else 2)
+
+    def _fit_window(self):
+        """Open at a size where every control and every description is fully visible.
+
+        Sizes come from what the widgets actually ask for (winfo_req*), not a
+        hardcoded guess, so this stays correct as options are added. Two details
+        that bite otherwise:
+          * ttk Labels do not wrap -- they get CLIPPED by a narrow pane, so the
+            form pane must be at least its requested width or text goes missing.
+          * a window manager reports height including the title bar, while Tk
+            geometry is content-only, so a little margin avoids clipping the
+            last row.
         """
         r = self.root
         r.update_idletasks()
-        need_h = r.winfo_reqheight() + 16          # small breathing room
-        form_w = self.paned.winfo_reqwidth()
-        want_w = max(1180, form_w + 40)            # form + a usable console half
 
-        # never open larger than the screen actually is
+        form = r.nametowidget(self.paned.panes()[0])
+        form_need = form.winfo_reqwidth()
+
+        want_w = max(self.START_W, form_need + 380)     # form + a usable console
+        want_h = r.winfo_reqheight() + 22               # margin for the last row
+
         max_w = r.winfo_screenwidth() - 80
         max_h = r.winfo_screenheight() - 120
-        w, h = min(want_w, max_w), min(need_h, max_h)
+        w, h = min(want_w, max_w), min(want_h, max_h)
 
         x = max(0, (r.winfo_screenwidth() - w) // 2)
         y = max(0, (r.winfo_screenheight() - h) // 3)
         r.geometry(f"{w}x{h}+{x}+{y}")
 
-        # put the sash at the halfway mark once the pane has a real width
         r.update_idletasks()
         try:
-            self.paned.sashpos(0, w // 2)
+            # give the form what it needs, hand the rest to the console
+            self.paned.sashpos(0, max(form_need, w // 2))
         except tk.TclError:
-            pass                                    # pane not realised yet; harmless
+            pass
 
     def _load_logo(self):
         """Load assets/logo.png if present. Missing logo is not an error."""
@@ -167,9 +303,10 @@ class App:
     def _build(self):
         r = self.root
         r.title(APP_TITLE)
-        r.minsize(900, 600)
+        r.minsize(460, 600)
+        self.hint = {"foreground": "#666", "font": hint_font()}
 
-        head = ttk.Frame(r, padding=(14, 12, 14, 6))
+        head = ttk.Frame(r, padding=(10, 7, 10, 3))
         head.pack(fill="x")
 
         # right side first so it keeps its width when the title text is long
@@ -179,102 +316,127 @@ class App:
         if self._logo_img is not None:
             ttk.Label(brand, image=self._logo_img).pack(anchor="e")
         link = ttk.Label(brand, text="github.com/dev-newb", foreground="#4a90d9",
-                         cursor="pointinghand")
+                         font=hint_font(), cursor="pointinghand")
         link.pack(anchor="e", pady=(2, 0))
         link.bind("<Button-1>", lambda _e: webbrowser.open(GITHUB_URL))
 
         titles = ttk.Frame(head)
         titles.pack(side="left", anchor="nw")
-        ttk.Label(titles, text=APP_TITLE, font=("", 16, "bold")).pack(anchor="w")
-        ttk.Label(titles, foreground="#666",
-                  text="Make a GameMaker game run on Android TV, Fire TV, Shield and Google TV."
-                  ).pack(anchor="w")
+        ttk.Label(titles, text=APP_TITLE,
+                  font=(hint_font()[0], 14, "bold")).pack(anchor="w")
+        self.tagline = ttk.Label(titles, **self.hint,
+                                 text="Run GameMaker games on Android TV, Fire TV, "
+                                      "Shield & Google TV.")
+        self.tagline.pack(anchor="w")
+        # The tagline spans the whole window, not the form pane, so it wraps
+        # against the space left of the logo rather than with the form hints.
+        self._head, self._brand = head, brand
+        head.bind("<Configure>", self._rewrap_head)
 
         # A PanedWindow gives a real draggable sash between the form and the
         # console, so the user owns how the horizontal space is divided.
         self.paned = ttk.PanedWindow(r, orient="horizontal")
         self.paned.pack(fill="both", expand=True)
+        self.paned.bind("<Configure>", self._clamp_sash)
 
-        body = ttk.Frame(self.paned, padding=(14, 0, 14, 0))
+        body = ttk.Frame(self.paned, padding=(10, 0, 10, 0))
         self.paned.add(body, weight=1)
 
         # 1. APK
-        f1 = ttk.LabelFrame(body, text=" 1. Choose the game's APK ", padding=10)
-        f1.pack(fill="x", pady=6)
+        f1 = ttk.LabelFrame(body, text=" 1. Choose the game's APK ", padding=7)
+        f1.pack(fill="x", pady=3)
         row = ttk.Frame(f1); row.pack(fill="x")
-        ttk.Entry(row, textvariable=self.apk).pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Browse…", command=self.pick_apk).pack(side="left", padx=(8, 0))
-        ttk.Label(f1, foreground="#666", text="A copy you already have. The original is never modified."
-                  ).pack(anchor="w", pady=(6, 0))
+        # width=12 is a floor, not a cap -- the entry stretches to fill. Left at
+        # its 20-character default it requests 194px and squeezes "Browse…" down
+        # to a blank square once the pane is narrow.
+        ttk.Entry(row, textvariable=self.apk, width=12).pack(side="left", fill="x",
+                                                             expand=True)
+        ttk.Button(row, text="Browse…", command=self.pick_apk).pack(side="left", padx=(6, 0))
+        ttk.Label(f1, **self.hint, text="Your own copy — the original is never modified."
+                  ).pack(anchor="w", pady=(4, 0))
 
         # 2. trim
-        f2 = ttk.LabelFrame(body, text=" 2. Fit it to your TV (optional) ", padding=10)
-        f2.pack(fill="x", pady=6)
+        f2 = ttk.LabelFrame(body, text=" 2. Fit it to your TV (optional) ", padding=7)
+        f2.pack(fill="x", pady=3)
         ttk.Label(f2, text="Processor architectures:").pack(anchor="w")
-        for val, txt in (("device", "Match the selected TV (recommended)"),
+        for val, txt in (("device", "Match the selected TV"),
                          ("manual", "Choose manually"),
                          ("all", "Keep all of them")):
             ttk.Radiobutton(f2, text=txt, value=val, variable=self.abi_mode,
-                            command=self._sync).pack(anchor="w", padx=12)
-        self.abi_box = ttk.Frame(f2); self.abi_box.pack(fill="x", padx=24, pady=(4, 6))
+                            command=self._sync).pack(anchor="w", padx=10)
+        self.abi_box = ttk.Frame(f2); self.abi_box.pack(fill="x", padx=18, pady=(2, 4))
+        # two rows: five ABIs on one line is what forces the pane unnecessarily wide
+        self._abi_boxes = []
         for a in ("arm64-v8a", "armeabi-v7a", "armeabi", "x86_64", "x86"):
             v = tk.BooleanVar(value=a in ("arm64-v8a", "armeabi-v7a", "armeabi"))
             self.abi_vars[a] = v
-            ttk.Checkbutton(self.abi_box, text=a, variable=v).pack(side="left", padx=(0, 10))
+            self._abi_boxes.append(ttk.Checkbutton(self.abi_box, text=a, variable=v))
+        self._layout_abis(3)
 
-        ttk.Separator(f2).pack(fill="x", pady=6)
-        ttk.Checkbutton(f2, text="Re-encode music to save space  (slightly alters audio)",
+        ttk.Separator(f2).pack(fill="x", pady=3)
+        ttk.Checkbutton(f2, text="Re-encode music to save space",
                         variable=self.audio_on, command=self._sync).pack(anchor="w")
-        self.audio_box = ttk.Frame(f2); self.audio_box.pack(fill="x", padx=24, pady=(4, 0))
+        ttk.Label(f2, **self.hint, text="Shrinks big soundtracks; alters audio slightly."
+                  ).pack(anchor="w", padx=18)
+        self.audio_box = ttk.Frame(f2); self.audio_box.pack(fill="x", padx=18, pady=(2, 0))
         ttk.Label(self.audio_box, text="Bitrate:").pack(side="left")
         ttk.Combobox(self.audio_box, textvariable=self.bitrate, width=6, state="readonly",
                      values=("96", "128", "160", "192")).pack(side="left", padx=6)
-        ttk.Label(self.audio_box, foreground="#666",
-                  text="kbps — tracks already smaller than this are left alone"
-                  ).pack(side="left")
+        ttk.Label(self.audio_box, text="kbps").pack(side="left")
+        self.audio_note = ttk.Label(f2, **self.hint,
+                                    text="Tracks already smaller are left alone.")
+        self.audio_note.pack(anchor="w", padx=18)
 
-        ttk.Separator(f2).pack(fill="x", pady=6)
+        ttk.Separator(f2).pack(fill="x", pady=3)
         orow = ttk.Frame(f2); orow.pack(fill="x")
         ttk.Label(orow, text="Screen orientation:").pack(side="left")
         ttk.Combobox(orow, textvariable=self.orient, width=12, state="readonly",
                      values=("keep", "landscape", "portrait")).pack(side="left", padx=8)
-        ttk.Label(f2, foreground="#666",
-                  text="Portrait phone games pillarbox on a TV. 'landscape' makes GameMaker "
-                       "rebuild the view for the wider screen (it re-lays out, not stretches)."
-                  ).pack(anchor="w", pady=(4, 0))
+        ttk.Label(f2, **self.hint,
+                  text="Portrait games pillarbox on a TV; landscape fills it."
+                  ).pack(anchor="w", pady=(2, 0))
 
-        ttk.Separator(f2).pack(fill="x", pady=6)
-        ttk.Checkbutton(f2, text="Install missing helper tools for me (adb / ffmpeg), asking first",
+        ttk.Separator(f2).pack(fill="x", pady=3)
+        ttk.Checkbutton(f2, text="Install missing tools for me",
                         variable=self.autotools).pack(anchor="w")
+        ttk.Label(f2, **self.hint, text="Fetches adb / ffmpeg via your package manager, asking first."
+                  ).pack(anchor="w", padx=18)
 
         # 3. device
-        f3 = ttk.LabelFrame(body, text=" 3. Your TV (optional) ", padding=10)
-        f3.pack(fill="x", pady=6)
-        row = ttk.Frame(f3); row.pack(fill="x")
-        self.dev_combo = ttk.Combobox(row, textvariable=self.device, state="readonly")
-        self.dev_combo.pack(side="left", fill="x", expand=True)
-        ttk.Button(row, text="Rescan", command=self.refresh_devices).pack(side="left", padx=(8, 0))
-        ttk.Button(row, text="Scan network…", command=self.scan_network).pack(side="left", padx=(6, 0))
+        f3 = ttk.LabelFrame(body, text=" 3. Your TV (optional) ", padding=7)
+        f3.pack(fill="x", pady=3)
+        # Gridded rather than packed so the two buttons can drop to their own
+        # row when the pane is narrow -- packed side="left" they just get pushed
+        # off the edge, and "Scan network…" disappears with no way to reach it.
+        self.dev_grid = ttk.Frame(f3); self.dev_grid.pack(fill="x")
+        self.dev_combo = ttk.Combobox(self.dev_grid, textvariable=self.device,
+                                      state="readonly", width=14)
+        self.btn_rescan = ttk.Button(self.dev_grid, text="Rescan",
+                                     command=self.refresh_devices)
+        self.btn_scan = ttk.Button(self.dev_grid, text="Scan network…",
+                                   command=self.scan_network)
+        self._dev_rows = None
+        self._layout_devrow(1)
         ttk.Checkbutton(f3, text="Install to it when finished",
-                        variable=self.install_after).pack(anchor="w", pady=(6, 0))
-        self.dev_info = ttk.Label(f3, foreground="#666", text="")
+                        variable=self.install_after).pack(anchor="w", pady=(4, 0))
+        self.dev_info = ttk.Label(f3, **self.hint, text="")
         self.dev_info.pack(anchor="w")
 
         # actions
-        act = ttk.Frame(body); act.pack(fill="x", pady=(10, 4))
+        act = ttk.Frame(body); act.pack(fill="x", pady=(7, 3))
 
         self.go_btn = ttk.Button(act, text="Patch", command=self.run)
         self.go_btn.pack(side="left")
-        ttk.Checkbutton(act, text="Preview only (write nothing)",
+        ttk.Checkbutton(act, text="Preview only — write nothing",
                         variable=self.dry).pack(side="left", padx=12)
         self.status = ttk.Label(act, text="", foreground="#2a7")
         self.status.pack(side="right")
 
         # log
         # Console occupies the right half permanently.
-        f4 = ttk.LabelFrame(self.paned, text=" Console ", padding=6)
+        f4 = ttk.LabelFrame(self.paned, text=" Console ", padding=5)
         self.paned.add(f4, weight=1)
-        self.log = tk.Text(f4, width=48, wrap="word", font=("Menlo", 10),
+        self.log = tk.Text(f4, width=44, wrap="word", font=("Menlo", 10),
                            background="#111318", foreground="#cfd3dd", insertbackground="#fff")
         sb = ttk.Scrollbar(f4, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
@@ -284,7 +446,7 @@ class App:
         self.log.tag_config("ok", foreground="#7fd39b")
 
         # env bar
-        self.envbar = ttk.Label(r, padding=(14, 4), foreground="#666", text="")
+        self.envbar = ttk.Label(r, padding=(10, 3), **self.hint, text="")
         self.envbar.pack(fill="x", side="bottom")
         self._sync()
         self.envbar.configure(text="checking tools…")
@@ -309,7 +471,7 @@ class App:
                 pass
             bits.append("audio tools " + ("OK" if enc else "not installed"))
             bits.append("signing: built in (no Java needed)")
-            self.q.put(("env", "   •   ".join(bits)))
+            self.q.put(("env", "  •  ".join(bits)))
         threading.Thread(target=work, daemon=True).start()
         if self.load_err:
             self.write(self.load_err + "\n", "err")

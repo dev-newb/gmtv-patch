@@ -25,7 +25,8 @@ from tkinter import filedialog, messagebox, ttk
 
 APP_TITLE = "Android TV Patcher"
 GITHUB_URL = "https://github.com/dev-newb"
-LOGO_MAX_H = 64          # logo is scaled down by whole-integer subsampling only
+LOGO_MAX_H = 64
+DRAWER_W = 460           # px the window grows by when the console is attached          # logo is scaled down by whole-integer subsampling only
 
 
 # ---------------------------------------------------------------- patcher import
@@ -81,6 +82,8 @@ def adb_devices():
 # ---------------------------------------------------------------- the app
 
 class App:
+    DRAWER_W = DRAWER_W
+
     def __init__(self, root):
         self.root = root
         self.q = queue.Queue()
@@ -159,8 +162,13 @@ class App:
                   text="Make a GameMaker game run on Android TV, Fire TV, Shield and Google TV."
                   ).pack(anchor="w")
 
-        body = ttk.Frame(r, padding=(14, 0, 14, 0))
-        body.pack(fill="both", expand=True)
+        # Horizontal split so the console can slide in as a real attached drawer
+        # on the right, rather than floating as its own window.
+        self.main_area = ttk.Frame(r)
+        self.main_area.pack(fill="both", expand=True)
+
+        body = ttk.Frame(self.main_area, padding=(14, 0, 14, 0))
+        body.pack(side="left", fill="both", expand=True)
 
         # 1. APK
         f1 = ttk.LabelFrame(body, text=" 1. Choose the game's APK ", padding=10)
@@ -226,7 +234,8 @@ class App:
 
         # actions
         act = ttk.Frame(body); act.pack(fill="x", pady=(10, 4))
-        ttk.Button(act, text="Console ⧉", command=self.toggle_sidecar).pack(side="right", padx=(0, 8))
+        self.console_btn = ttk.Button(act, text="Console ⧉", command=self.toggle_sidecar)
+        self.console_btn.pack(side="right", padx=(0, 8))
         self.go_btn = ttk.Button(act, text="Patch", command=self.run)
         self.go_btn.pack(side="left")
         ttk.Checkbutton(act, text="Preview only (write nothing)",
@@ -235,7 +244,8 @@ class App:
         self.status.pack(side="right")
 
         # log
-        f4 = ttk.LabelFrame(body, text=" Output ", padding=6)
+        self.log_card = ttk.LabelFrame(body, text=" Output ", padding=6)
+        f4 = self.log_card
         f4.pack(fill="both", expand=True, pady=(4, 8))
         self.log = tk.Text(f4, height=12, wrap="word", font=("Menlo", 10),
                            background="#111318", foreground="#cfd3dd", insertbackground="#fff")
@@ -337,33 +347,56 @@ class App:
                 self.log_sinks.remove(sink)     # window was closed underneath us
 
     def toggle_sidecar(self):
-        """Open/close a separate console window that mirrors the log.
+        """Slide the console in and out as a panel attached to the right.
 
-        Useful on a small main window, and for screen-sharing the output next to
-        the app rather than scrolling a short pane.
+        While it is open the bottom Output pane is hidden -- one console, not two --
+        and the window widens to make room, then shrinks back on close.
         """
         if self.sidecar is not None:
             self._close_sidecar()
             return
-        win = tk.Toplevel(self.root)
-        win.title(APP_TITLE + " — console")
-        win.geometry("860x520")
-        txt = tk.Text(win, wrap="word", font=("Menlo", 11),
+
+        pane = ttk.LabelFrame(self.main_area, text=" Console ", padding=6)
+        pane.pack(side="right", fill="both", expand=True, padx=(0, 12), pady=(0, 8))
+        txt = tk.Text(pane, wrap="word", font=("Menlo", 10), width=52,
                       background="#111318", foreground="#cfd3dd", insertbackground="#fff")
-        sb = ttk.Scrollbar(win, command=txt.yview)
+        sb = ttk.Scrollbar(pane, command=txt.yview)
         txt.configure(yscrollcommand=sb.set)
         sb.pack(side="right", fill="y"); txt.pack(fill="both", expand=True)
         txt.tag_config("err", foreground="#f0907e")
         txt.tag_config("ok", foreground="#7fd39b")
-        txt.insert("end", self.log.get("1.0", "end"))   # carry over what already happened
+        txt.insert("end", self.log.get("1.0", "end"))     # carry over the history
         txt.see("end")
+
+        # hide the bottom pane and stop mirroring to it
+        self.log_card.pack_forget()
+        if self.log in self.log_sinks:
+            self.log_sinks.remove(self.log)
         self.log_sinks.append(txt)
+
         self._sidecar_text = txt
-        win.protocol("WM_DELETE_WINDOW", self._close_sidecar)
-        self.sidecar = win
+        self.sidecar = pane
+        self._grow_for_drawer()
+        self.console_btn.configure(text="Console ⇥")
+
+    def _grow_for_drawer(self, opening=True):
+        """Widen the window for the drawer, and put it back on close."""
+        self.root.update_idletasks()
+        w, h = self.root.winfo_width(), self.root.winfo_height()
+        x, y = self.root.winfo_x(), self.root.winfo_y()
+        if opening:
+            self._width_before = w
+            target = w + self.DRAWER_W
+            # keep it on screen if the window is already near the right edge
+            if x + target > self.root.winfo_screenwidth():
+                x = max(0, self.root.winfo_screenwidth() - target - 20)
+            self.root.geometry(f"{target}x{h}+{x}+{y}")
+        else:
+            target = getattr(self, "_width_before", None) or max(640, w - self.DRAWER_W)
+            self.root.geometry(f"{target}x{h}+{x}+{y}")
 
     def _close_sidecar(self):
-        """Single teardown path, so the button and the window's X behave identically."""
+        """Single teardown path, so the button and any other caller behave alike."""
         txt = getattr(self, "_sidecar_text", None)
         if txt is not None and txt in self.log_sinks:
             self.log_sinks.remove(txt)
@@ -371,6 +404,12 @@ class App:
         if self.sidecar is not None:
             self.sidecar.destroy()
             self.sidecar = None
+        # restore the bottom pane and resume mirroring to it
+        self.log_card.pack(fill="both", expand=True, pady=(4, 8))
+        if self.log not in self.log_sinks:
+            self.log_sinks.append(self.log)
+        self._grow_for_drawer(opening=False)
+        self.console_btn.configure(text="Console ⧉")
 
     def scan_network(self):
         """Sweep the LAN for Android devices with adb open, off the main thread."""

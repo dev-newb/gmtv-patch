@@ -100,16 +100,45 @@ class App:
         self.abi_vars = {}
         self.devices = []
         self.busy = False
-        self.sidecar = None       # detached console Toplevel
         self.log_sinks = []       # every Text widget that mirrors output
         self._build()
         # Everything that shells out (adb, ffmpeg) runs off the main thread AFTER the
         # first paint. Probing during construction leaves the user staring at an empty
         # window for as long as those subprocesses take -- which is exactly what a
         # disconnected TV or a slow ffmpeg makes happen.
+        self.root.after(0, self._fit_window)
         self.root.after(80, self._drain)
         self.root.after(120, self.refresh_devices)
         self.root.after(120, self._probe_tools)
+
+    def _fit_window(self):
+        """Open at a size where every option is already visible.
+
+        Tk knows what each widget needs (winfo_reqheight), so ask rather than
+        guess: nobody should have to resize the window to reach a control that
+        was supposed to be on screen from the start.
+        """
+        r = self.root
+        r.update_idletasks()
+        need_h = r.winfo_reqheight() + 16          # small breathing room
+        form_w = self.paned.winfo_reqwidth()
+        want_w = max(1180, form_w + 40)            # form + a usable console half
+
+        # never open larger than the screen actually is
+        max_w = r.winfo_screenwidth() - 80
+        max_h = r.winfo_screenheight() - 120
+        w, h = min(want_w, max_w), min(need_h, max_h)
+
+        x = max(0, (r.winfo_screenwidth() - w) // 2)
+        y = max(0, (r.winfo_screenheight() - h) // 3)
+        r.geometry(f"{w}x{h}+{x}+{y}")
+
+        # put the sash at the halfway mark once the pane has a real width
+        r.update_idletasks()
+        try:
+            self.paned.sashpos(0, w // 2)
+        except tk.TclError:
+            pass                                    # pane not realised yet; harmless
 
     def _load_logo(self):
         """Load assets/logo.png if present. Missing logo is not an error."""
@@ -138,8 +167,7 @@ class App:
     def _build(self):
         r = self.root
         r.title(APP_TITLE)
-        r.geometry("760x720")
-        r.minsize(640, 560)
+        r.minsize(900, 600)
 
         head = ttk.Frame(r, padding=(14, 12, 14, 6))
         head.pack(fill="x")
@@ -162,13 +190,13 @@ class App:
                   text="Make a GameMaker game run on Android TV, Fire TV, Shield and Google TV."
                   ).pack(anchor="w")
 
-        # Horizontal split so the console can slide in as a real attached drawer
-        # on the right, rather than floating as its own window.
-        self.main_area = ttk.Frame(r)
-        self.main_area.pack(fill="both", expand=True)
+        # A PanedWindow gives a real draggable sash between the form and the
+        # console, so the user owns how the horizontal space is divided.
+        self.paned = ttk.PanedWindow(r, orient="horizontal")
+        self.paned.pack(fill="both", expand=True)
 
-        body = ttk.Frame(self.main_area, padding=(14, 0, 14, 0))
-        body.pack(side="left", fill="both", expand=True)
+        body = ttk.Frame(self.paned, padding=(14, 0, 14, 0))
+        self.paned.add(body, weight=1)
 
         # 1. APK
         f1 = ttk.LabelFrame(body, text=" 1. Choose the game's APK ", padding=10)
@@ -234,8 +262,7 @@ class App:
 
         # actions
         act = ttk.Frame(body); act.pack(fill="x", pady=(10, 4))
-        self.console_btn = ttk.Button(act, text="Console ⧉", command=self.toggle_sidecar)
-        self.console_btn.pack(side="right", padx=(0, 8))
+
         self.go_btn = ttk.Button(act, text="Patch", command=self.run)
         self.go_btn.pack(side="left")
         ttk.Checkbutton(act, text="Preview only (write nothing)",
@@ -244,10 +271,10 @@ class App:
         self.status.pack(side="right")
 
         # log
-        self.log_card = ttk.LabelFrame(body, text=" Output ", padding=6)
-        f4 = self.log_card
-        f4.pack(fill="both", expand=True, pady=(4, 8))
-        self.log = tk.Text(f4, height=12, wrap="word", font=("Menlo", 10),
+        # Console occupies the right half permanently.
+        f4 = ttk.LabelFrame(self.paned, text=" Console ", padding=6)
+        self.paned.add(f4, weight=1)
+        self.log = tk.Text(f4, width=48, wrap="word", font=("Menlo", 10),
                            background="#111318", foreground="#cfd3dd", insertbackground="#fff")
         sb = ttk.Scrollbar(f4, command=self.log.yview)
         self.log.configure(yscrollcommand=sb.set)
@@ -345,71 +372,6 @@ class App:
                 sink.see("end")
             except tk.TclError:
                 self.log_sinks.remove(sink)     # window was closed underneath us
-
-    def toggle_sidecar(self):
-        """Slide the console in and out as a panel attached to the right.
-
-        While it is open the bottom Output pane is hidden -- one console, not two --
-        and the window widens to make room, then shrinks back on close.
-        """
-        if self.sidecar is not None:
-            self._close_sidecar()
-            return
-
-        pane = ttk.LabelFrame(self.main_area, text=" Console ", padding=6)
-        pane.pack(side="right", fill="both", expand=True, padx=(0, 12), pady=(0, 8))
-        txt = tk.Text(pane, wrap="word", font=("Menlo", 10), width=52,
-                      background="#111318", foreground="#cfd3dd", insertbackground="#fff")
-        sb = ttk.Scrollbar(pane, command=txt.yview)
-        txt.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y"); txt.pack(fill="both", expand=True)
-        txt.tag_config("err", foreground="#f0907e")
-        txt.tag_config("ok", foreground="#7fd39b")
-        txt.insert("end", self.log.get("1.0", "end"))     # carry over the history
-        txt.see("end")
-
-        # hide the bottom pane and stop mirroring to it
-        self.log_card.pack_forget()
-        if self.log in self.log_sinks:
-            self.log_sinks.remove(self.log)
-        self.log_sinks.append(txt)
-
-        self._sidecar_text = txt
-        self.sidecar = pane
-        self._grow_for_drawer()
-        self.console_btn.configure(text="Console ⇥")
-
-    def _grow_for_drawer(self, opening=True):
-        """Widen the window for the drawer, and put it back on close."""
-        self.root.update_idletasks()
-        w, h = self.root.winfo_width(), self.root.winfo_height()
-        x, y = self.root.winfo_x(), self.root.winfo_y()
-        if opening:
-            self._width_before = w
-            target = w + self.DRAWER_W
-            # keep it on screen if the window is already near the right edge
-            if x + target > self.root.winfo_screenwidth():
-                x = max(0, self.root.winfo_screenwidth() - target - 20)
-            self.root.geometry(f"{target}x{h}+{x}+{y}")
-        else:
-            target = getattr(self, "_width_before", None) or max(640, w - self.DRAWER_W)
-            self.root.geometry(f"{target}x{h}+{x}+{y}")
-
-    def _close_sidecar(self):
-        """Single teardown path, so the button and any other caller behave alike."""
-        txt = getattr(self, "_sidecar_text", None)
-        if txt is not None and txt in self.log_sinks:
-            self.log_sinks.remove(txt)
-        self._sidecar_text = None
-        if self.sidecar is not None:
-            self.sidecar.destroy()
-            self.sidecar = None
-        # restore the bottom pane and resume mirroring to it
-        self.log_card.pack(fill="both", expand=True, pady=(4, 8))
-        if self.log not in self.log_sinks:
-            self.log_sinks.append(self.log)
-        self._grow_for_drawer(opening=False)
-        self.console_btn.configure(text="Console ⧉")
 
     def scan_network(self):
         """Sweep the LAN for Android devices with adb open, off the main thread."""

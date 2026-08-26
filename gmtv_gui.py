@@ -26,7 +26,10 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 APP_TITLE = "Android TV Patcher"
 GITHUB_URL = "https://github.com/dev-newb"
 LOGO_MAX_H = 56
-START_W = 980            # opening width; form + console both fit with no clipping
+START_W = 840            # opening width. Half of this is 420px, just over the
+                         # 405px the form needs to keep every hint on one line --
+                         # any wider and the extra is dead space to the right of
+                         # the controls, since nothing in the form stretches.
 
 # Grey explanatory text sits a point below the control labels: it reads as
 # secondary, which is what it is, and the smaller face buys back real estate on
@@ -202,26 +205,6 @@ class App:
         except (tk.TclError, AttributeError):
             pass
 
-    def _layout_devrow(self, rows):
-        """One row when there is width for it, two when there is not."""
-        if self._dev_rows == rows:
-            return
-        self._dev_rows = rows
-        for w in (self.dev_combo, self.btn_rescan, self.btn_scan):
-            w.grid_forget()
-        if rows == 1:
-            self.dev_combo.grid(row=0, column=0, sticky="ew")
-            self.btn_rescan.grid(row=0, column=1, padx=(6, 0))
-            self.btn_scan.grid(row=0, column=2, padx=(4, 0))
-            self.dev_grid.columnconfigure(0, weight=1)
-            self.dev_grid.columnconfigure(2, weight=0)
-        else:
-            self.dev_combo.grid(row=0, column=0, columnspan=2, sticky="ew")
-            self.btn_rescan.grid(row=1, column=0, sticky="w", pady=(4, 0))
-            self.btn_scan.grid(row=1, column=1, sticky="w", padx=(4, 0), pady=(4, 0))
-            self.dev_grid.columnconfigure(0, weight=1)
-            self.dev_grid.columnconfigure(2, weight=0)
-
     def _rewrap(self, event=None):
         """Reflow descriptions to the current pane width."""
         try:
@@ -237,8 +220,6 @@ class App:
                 pass
         if getattr(self, "_abi_boxes", None):
             self._layout_abis(3 if width >= 385 else 2)
-        if getattr(self, "dev_grid", None):
-            self._layout_devrow(1 if width >= 410 else 2)
 
     def _fit_window(self):
         """Open at a size where every control and every description is fully visible.
@@ -306,22 +287,22 @@ class App:
         r.minsize(460, 600)
         self.hint = {"foreground": "#666", "font": hint_font()}
 
-        head = ttk.Frame(r, padding=(10, 7, 10, 3))
+        head = ttk.Frame(r, padding=(10, 5, 4, 0))
         head.pack(fill="x")
 
         # right side first so it keeps its width when the title text is long
         brand = ttk.Frame(head)
-        brand.pack(side="right", anchor="ne")
+        brand.pack(side="right", anchor="e")
         self._logo_img = self._load_logo()
-        if self._logo_img is not None:
-            ttk.Label(brand, image=self._logo_img).pack(anchor="e")
         link = ttk.Label(brand, text="github.com/dev-newb", foreground="#4a90d9",
                          font=hint_font(), cursor="pointinghand")
-        link.pack(anchor="e", pady=(2, 0))
+        link.pack(side="left", padx=(0, 10))
+        if self._logo_img is not None:
+            ttk.Label(brand, image=self._logo_img).pack(side="left")
         link.bind("<Button-1>", lambda _e: webbrowser.open(GITHUB_URL))
 
         titles = ttk.Frame(head)
-        titles.pack(side="left", anchor="nw")
+        titles.pack(side="left", anchor="w")   # centred against the logo block
         ttk.Label(titles, text=APP_TITLE,
                   font=(hint_font()[0], 14, "bold")).pack(anchor="w")
         self.tagline = ttk.Label(titles, **self.hint,
@@ -339,7 +320,7 @@ class App:
         self.paned.pack(fill="both", expand=True)
         self.paned.bind("<Configure>", self._clamp_sash)
 
-        body = ttk.Frame(self.paned, padding=(10, 0, 10, 0))
+        body = ttk.Frame(self.paned, padding=(10, 0, 4, 0))
         self.paned.add(body, weight=1)
 
         # 1. APK
@@ -399,7 +380,7 @@ class App:
         ttk.Separator(f2).pack(fill="x", pady=3)
         ttk.Checkbutton(f2, text="Install missing tools for me",
                         variable=self.autotools).pack(anchor="w")
-        ttk.Label(f2, **self.hint, text="Fetches adb / ffmpeg via your package manager, asking first."
+        ttk.Label(f2, **self.hint, text="Fetches adb / ffmpeg — asks before installing."
                   ).pack(anchor="w", padx=18)
 
         # 3. device
@@ -408,15 +389,20 @@ class App:
         # Gridded rather than packed so the two buttons can drop to their own
         # row when the pane is narrow -- packed side="left" they just get pushed
         # off the edge, and "Scan network…" disappears with no way to reach it.
+        # The dropdown takes the full width with the two buttons stacked beside
+        # it: side by side they cost ~90px more than the column does, and the
+        # column still fits at the narrowest the pane can get.
         self.dev_grid = ttk.Frame(f3); self.dev_grid.pack(fill="x")
+        self.dev_grid.columnconfigure(0, weight=1)
         self.dev_combo = ttk.Combobox(self.dev_grid, textvariable=self.device,
-                                      state="readonly", width=14)
+                                      state="readonly", width=10)
+        self.dev_combo.grid(row=0, column=0, rowspan=2, sticky="ew", padx=(0, 6))
         self.btn_rescan = ttk.Button(self.dev_grid, text="Rescan",
                                      command=self.refresh_devices)
+        self.btn_rescan.grid(row=0, column=1, sticky="ew")
         self.btn_scan = ttk.Button(self.dev_grid, text="Scan network…",
                                    command=self.scan_network)
-        self._dev_rows = None
-        self._layout_devrow(1)
+        self.btn_scan.grid(row=1, column=1, sticky="ew", pady=(3, 0))
         ttk.Checkbutton(f3, text="Install to it when finished",
                         variable=self.install_after).pack(anchor="w", pady=(4, 0))
         self.dev_info = ttk.Label(f3, **self.hint, text="")
@@ -434,7 +420,7 @@ class App:
 
         # log
         # Console occupies the right half permanently.
-        f4 = ttk.LabelFrame(self.paned, text=" Console ", padding=5)
+        f4 = ttk.LabelFrame(self.paned, text=" Console ", padding=(4, 4, 3, 4))
         self.paned.add(f4, weight=1)
         self.log = tk.Text(f4, width=44, wrap="word", font=("Menlo", 10),
                            background="#111318", foreground="#cfd3dd", insertbackground="#fff")

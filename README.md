@@ -537,9 +537,10 @@ The result is one file the user double-clicks. No Python, no Java, nothing to in
 - **Controller support on the title screen.** Some games gate "touch to start" on a real
   touch event. The rest of the game may be fine on a gamepad.
 - **On-screen touch controls.** Games that auto-hide them when a controller is detected
-  behave correctly; others keep drawing them. Spelunky Classic HD draws a full pad and
-  exposes size, offset and visibility settings of its own, so this is not always a
-  problem — sometimes it is the thing that makes a touch-only game usable.
+  behave correctly; others keep drawing them. Whether that matters depends on the game,
+  not on this patch: Spelunky Classic HD is not touch-only — it has a **GAMEPAD
+  CONFIGURATION** menu, and its touch pad is one input option among several, with its own
+  size, offset and visibility settings. Grid Run is the genuinely touch-only one.
 - **32-bit only.** GameMaker 1.4 never shipped an arm64 runner, so these games run under
   32-bit ARM translation on modern devices. Not patchable — needs a rebuild.
 - **Launcher placement.** No `LEANBACK_LAUNCHER` category or TV banner is added, since

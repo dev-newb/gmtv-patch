@@ -1,6 +1,9 @@
 # gmtv-patch
 
-Make a **GameMaker Studio 1.4** Android APK run on **Android TV** (NVIDIA Shield, etc.).
+Make a **GameMaker** Android APK run on **Android TV** (NVIDIA Shield, Fire TV,
+Google TV, Bravia). Handles both eras: 1.4-era exports with deflated libraries and v1
+signatures, and modern ones with stored page-aligned libraries, v2 signatures and
+`targetSdk 35`.
 
 Ships no game data and no GameMaker runtime — it patches a copy you already have.
 
@@ -170,8 +173,8 @@ of length prefix, not one. Getting it wrong yields
 | Game | Engine era | Result |
 |---|---|---|
 | **AM2R 1.5.2** | GMS 1.4, v1, deflated libs | runs; controller support built in |
-| **Grid Run 1.1.0** | GMS 1.4, targetSdk 26 | runs; `--orientation landscape` gives true widescreen; touch-only, needs a mouse |
-| **Spelunky Classic HD** | targetSdk 35, arm64, v2, stored libs | runs; **has a full GAMEPAD CONFIGURATION menu** |
+| **Grid Run 1.1.0** | GMS 1.4, targetSdk 26 | runs; `--orientation landscape` fills a 16:9 TV properly; touch-only, wants a mouse |
+| **Spelunky Classic HD 1.2.2** | targetSdk 35, v2, stored libs | runs; **full GAMEPAD CONFIGURATION menu**, plus on-screen touch controls |
 
 Two of the three already had working controller support — the TV gate was the only thing
 preventing anyone from ever reaching it.
@@ -180,7 +183,7 @@ preventing anyone from ever reaching it.
 
 | Device | Android | Result |
 |---|---|---|
-| NVIDIA SHIELD Android TV (2017, `mdarcy`) | 11 | runs, 59.8 fps |
+| NVIDIA SHIELD Android TV (2017, `mdarcy`) | 11 | runs — **all three games**, AM2R at 59.8 fps |
 | Sony BRAVIA 4K VH2 | 12 | runs |
 | Chromecast with Google TV 4K (`sabrina`) | **14** | runs — incl. pure-Python signature |
 | Amazon Fire TV | — | **untested** — the `AMAZON` fix is derived from the binary, not confirmed on hardware |
@@ -198,13 +201,26 @@ python3 gmtv-patch.py YourGame.apk
 Writes `YourGame-tv.apk`, signed and ready to sideload.
 
 ```
-  -o, --output FILE      output path (default: <name>-tv.apk)
-      --key FILE         signing key (PEM), created if missing (default: gmtv-key.pem)
-      --dry-run          report what would change, write nothing
-      --abis LIST        keep only these ABIs (e.g. armeabi-v7a,armeabi)
-      --shrink-audio [K] re-encode Ogg music to K kbps (default 128)
-      --orientation X    landscape | portrait | both — rewrite screen orientation
+  -o, --output FILE       output path (default: <name>-tv.apk)
+      --key FILE          signing key (PEM), created if missing (default: gmtv-key.pem)
+      --dry-run           report what would change, write nothing
+
+      --list-abis         show the architectures inside, and what each one costs
+      --abis LIST         KEEP only these ABIs (e.g. armeabi-v7a,armeabi)
+      --drop-abis LIST    REMOVE these instead (e.g. mips,x86) — excludes --abis
+      --from-device [SER] ask a connected TV over adb which ABIs it can load,
+                          keep those, drop the rest
+
+      --shrink-audio [K]  re-encode Ogg music to K kbps (default 128)
+      --orientation X     landscape | portrait | both — rewrite screen orientation
+
+      --install-adb       offer to install adb via this platform's package manager
+      --install-ffmpeg    offer to install ffmpeg the same way
+  -y, --yes               answer yes to the install prompt (scripts / CI)
 ```
+
+`--abis`, `--drop-abis` and `--list-abis` need no extra tools. `--from-device` needs
+`adb`; `--shrink-audio` needs `ffmpeg` or `vorbis-tools`.
 
 ## Making it fit (optional)
 
@@ -413,7 +429,8 @@ uninstall and no lost saves.
 ## Requirements
 
 - **Python 3.8+ and the `cryptography` package.** That is the whole hard requirement.
-- **No JDK.** APK v1 (JAR) signing is implemented in pure Python in `gmtv_sign.py`.
+- **No JDK.** Both signature schemes are pure Python — v1 (JAR) in `gmtv_sign.py`,
+  v2 (APK Signature Scheme v2) in `gmtv_sign_v2.py`.
 
 Optional, only for optional features:
 
@@ -445,25 +462,58 @@ Digests are computed by streaming, so a 300 MB archive never lands in memory at 
 After writing, the tool re-opens the finished APK, recomputes every digest, and compares
 against what it claimed — a real self-check, not a formality.
 
-**Verified three independent ways:**
+v2 is a different scheme entirely and is applied automatically when the app needs it —
+see [Modern APKs](#modern-apks-stored-libraries-and-v2-signatures).
 
-1. The JDK's own `jarsigner -verify` reports `jar verified.`
-2. Android 14 (Chromecast with Google TV) installs and runs it
-3. Re-patching with the same key installs *over* the previous build with no uninstall,
-   which is what preserves save files
+**How it is verified:**
+
+1. **Android's own installer**, which is the verifier that actually matters. Patched
+   APKs install and run on four devices from Android 11 to 14, including a
+   `targetSdk 35` package the platform rejects outright unless the v2 block parses
+   exactly right.
+2. **The per-run self-check** above, which catches a bad manifest or a bad zip write
+   before the file ever reaches a TV.
+3. **In-place upgrades.** Re-patching with the same key installs *over* the previous
+   build with no uninstall — which is what preserves save files.
+
+Not checked against `jarsigner`: the whole point was to stop needing a JDK, and there is
+no Java runtime on the machine this was built on.
 
 The key is a single PEM (`gmtv-key.pem`, key + self-signed cert) created on first run.
 Keep it: same key means in-place upgrades; a new key forces an uninstall and loses saves.
 
 ## Desktop app
 
-`gmtv_gui.py` is a Tkinter front end — standard library, so a PyInstaller bundle needs no
-extra runtime. It *imports* the patcher rather than shelling out to `python3`, which
-matters once frozen: there is no interpreter on the user's PATH to call.
+![The patcher part-way through a run: options on the left, live output on the right](assets/screenshot-gui.png)
+
+`gmtv_gui.py` is a Tkinter front end covering everything the CLI does. Standard library
+only, so a PyInstaller bundle needs no extra runtime, and it *imports* the patcher rather
+than shelling out to `python3` — once frozen there is no interpreter on the user's PATH
+to call.
+
+**It finds your TV for you.** The dropdown lists whatever `adb` already knows about.
+**Scan network…** goes further: it sweeps the local subnets on port 5555 and queries
+mDNS, so a TV that was never paired still turns up, and connects it. Picking one fills in
+its Android version and the ABIs it can load — then **Match the selected TV** trims the
+APK to exactly those, which is the difference between a 317 MB install and a 137 MB one.
+
+**The console is the real thing.** The right-hand pane is the patcher's actual output
+streamed live, not a progress bar — every constant replaced, every architecture kept or
+dropped with what it costs, the signing self-check. Drag the divider to give either side
+more room.
+
+**Install to it when finished** hands the result straight to `adb install` on the
+selected TV. **Preview only** runs the whole thing and writes nothing, so you can see
+what a patch would do before committing to it.
+
+Build a standalone app:
 
 ```bash
-pyinstaller --onefile --windowed --name "AM2R TV Patcher" \
-    --add-data "gmtv-patch.py:." --add-data "gmtv_sign.py:." gmtv_gui.py
+pyinstaller --onefile --windowed --name "Android TV Patcher" \
+    --add-data "gmtv-patch.py:."   --add-data "gmtv_sign.py:." \
+    --add-data "gmtv_sign_v2.py:." --add-data "gmtv_axml.py:." \
+    --add-data "gmtv_scan.py:."    --add-data "assets:assets" \
+    gmtv_gui.py
 ```
 
 The result is one file the user double-clicks. No Python, no Java, nothing to install.
@@ -487,7 +537,9 @@ The result is one file the user double-clicks. No Python, no Java, nothing to in
 - **Controller support on the title screen.** Some games gate "touch to start" on a real
   touch event. The rest of the game may be fine on a gamepad.
 - **On-screen touch controls.** Games that auto-hide them when a controller is detected
-  will behave correctly; others will keep drawing them.
+  behave correctly; others keep drawing them. Spelunky Classic HD draws a full pad and
+  exposes size, offset and visibility settings of its own, so this is not always a
+  problem — sometimes it is the thing that makes a touch-only game usable.
 - **32-bit only.** GameMaker 1.4 never shipped an arm64 runner, so these games run under
   32-bit ARM translation on modern devices. Not patchable — needs a rebuild.
 - **Launcher placement.** No `LEANBACK_LAUNCHER` category or TV banner is added, since

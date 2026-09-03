@@ -458,17 +458,60 @@ uninstall and no lost saves.
 - **No JDK.** Both signature schemes are pure Python — v1 (JAR) in `gmtv_sign.py`,
   v2 (APK Signature Scheme v2) in `gmtv_sign_v2.py`.
 
+### Installing
+
+**macOS**
+
 ```bash
-git clone https://github.com/dev-newb/gmtv-patch.git
-cd gmtv-patch
+brew install python@3.13 python-tk@3.13      # python-tk only if you want the GUI
+git clone https://github.com/dev-newb/gmtv-patch.git && cd gmtv-patch
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/python gmtv-patch.py YourGame.apk --dry-run
 ```
 
-The virtualenv is not stylistic: macOS and most current Linux distributions refuse
-`pip install` into the system Python (PEP 668, *externally-managed-environment*).
-And `cryptography` is not optional — a patched APK will not install until it has
-been re-signed, so signing runs on every patch, not just on some flag.
+**Linux** (Debian/Ubuntu shown; `python3-tk` only if you want the GUI)
+
+```bash
+sudo apt install python3-venv python3-tk
+git clone https://github.com/dev-newb/gmtv-patch.git && cd gmtv-patch
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python gmtv-patch.py YourGame.apk --dry-run
+```
+
+**Windows** (PowerShell) — no virtualenv needed, Windows has no PEP 668 restriction,
+and python.org builds ship Tk already
+
+```powershell
+git clone https://github.com/dev-newb/gmtv-patch.git
+cd gmtv-patch
+pip install -r requirements.txt
+python gmtv-patch.py YourGame.apk --dry-run
+```
+
+### Two things that bite
+
+**macOS: the GUI will not run on Apple's built-in Python.** `/usr/bin/python3` ships
+Tk 8.5, which draws an **empty window with no error message** — it looks like the app
+is broken. A virtualenv made from it inherits the same Tk, so `python3 -m venv` is not
+enough on its own; the interpreter it is built *from* has to be a Homebrew or
+python.org one with `python-tk` alongside. On this machine:
+
+| interpreter | Tk | GUI |
+|---|---|---|
+| `/usr/bin/python3` (Apple) | 8.5 | blank window |
+| Homebrew `python@3.13` + `python-tk@3.13` | 9.0 | works |
+
+Check yours with `.venv/bin/python -c "import tkinter; print(tkinter.TkVersion)"`.
+The command line is unaffected either way — this is a GUI-only problem.
+
+**Linux: `tkinter` is usually a separate package.** `import tkinter` failing with
+*"No module named tkinter"* means the interpreter is fine and the distro simply did
+not ship the bindings. Again, CLI-only users can ignore it.
+
+The virtualenv on macOS and Linux is not stylistic: both refuse `pip install` into the
+system Python (PEP 668, *externally-managed-environment*). And `cryptography` is not
+optional — a patched APK will not install until it has been re-signed, so signing runs
+on every patch, not just behind some flag.
 
 Optional, only for optional features:
 

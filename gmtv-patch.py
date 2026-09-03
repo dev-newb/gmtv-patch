@@ -290,7 +290,21 @@ def abis_for_device(apk, serial=""):
             f"       APK contains    : {', '.join(sorted(present))}")
     print(f"        will load {usable[0]}"
           + (f" (its preferred {dev[0]} is not in this APK)" if dev[0] != usable[0] else ""))
-    return ",".join(usable)
+
+    # Only usable[0] is ever loaded. Android walks the device's preference list
+    # and binds the first ABI the APK ships, then uses that one for the life of
+    # the install -- so every other "usable" ABI is unreachable code sitting in
+    # the archive. Keeping them was costing 7.8MB of armeabi on a Bravia that
+    # reports armeabi-v7a first and will never fall back to it, on a TV where
+    # that was most of the difference between installing and running out of room.
+    #
+    # This does make the result specific to the device's architecture rather than
+    # merely compatible with it, which is what --from-device already promises.
+    # --abis is the flag for a build that has to serve several devices.
+    if len(usable) > 1:
+        print(f"        dropping {', '.join(usable[1:])} -- reachable, but never "
+              f"loaded while {usable[0]} is present")
+    return usable[0]
 
 
 def resolve_abis(apk, keep_arg, drop_arg):

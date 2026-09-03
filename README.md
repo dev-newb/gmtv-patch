@@ -206,8 +206,14 @@ Writes `YourGame-tv.apk`, signed and ready to sideload.
 
 ```
   -o, --output FILE       output path (default: <name>-tv.apk)
-      --key FILE          signing key (PEM), created if missing (default: gmtv-key.pem)
+      --key FILE          signing key (PEM), created if missing; defaults to
+                          gmtv-key.pem beside the script
+      --new-key           sign with a fresh key — a SEPARATE app, saves not kept
       --dry-run           report what would change, write nothing
+
+      --list-devices      list the TVs adb can currently see, then exit
+      --scan-network      sweep the LAN for TVs with wireless debugging, then exit
+      --install [SERIAL]  install to a connected TV when finished
 
       --list-abis         show the architectures inside, and what each one costs
       --abis LIST         KEEP only these ABIs (e.g. armeabi-v7a,armeabi)
@@ -223,8 +229,20 @@ Writes `YourGame-tv.apk`, signed and ready to sideload.
   -y, --yes               answer yes to the install prompt (scripts / CI)
 ```
 
-`--abis`, `--drop-abis` and `--list-abis` need no extra tools. `--from-device` needs
-`adb`; `--shrink-audio` needs `ffmpeg` or `vorbis-tools`.
+`--abis`, `--drop-abis` and `--list-abis` need no extra tools. `--from-device`,
+`--install`, `--list-devices` and `--scan-network` need `adb`; `--shrink-audio` needs
+`ffmpeg` or `vorbis-tools`.
+
+**The CLI and the desktop app do the same things.** `--install` carries the same two
+recoveries the GUI has: it works around the Play Protect verifier, and when the TV is
+full it offers to clear cached files and retries. It asks first, and declines rather
+than assuming yes when stdin is not a terminal. Neither front end touches app data —
+on a 4 GB TV that is mostly save files.
+
+```bash
+python3 gmtv-patch.py --scan-network                    # find TVs on the network
+python3 gmtv-patch.py Game.apk --from-device --install  # fit it, then install it
+```
 
 ## Making it fit (optional)
 

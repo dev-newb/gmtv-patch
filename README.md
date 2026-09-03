@@ -7,6 +7,10 @@ signatures, and modern ones with stored page-aligned libraries, v2 signatures an
 
 Ships no game data and no GameMaker runtime — it patches a copy you already have.
 
+![The patcher part-way through a run: options on the left, live output on the right](assets/screenshot-gui.png)
+
+*The desktop app mid-run — options on the left, the patcher's live output on the right. There is a command-line version too.*
+
 ## The problem
 
 GameMaker Studio 1.4 games refuse to start on Android TV devices, dying on the title
@@ -495,8 +499,6 @@ The key is a single PEM (`gmtv-key.pem`, key + self-signed cert) created on firs
 Keep it: same key means in-place upgrades; a new key forces an uninstall and loses saves.
 
 ## Desktop app
-
-![The patcher part-way through a run: options on the left, live output on the right](assets/screenshot-gui.png)
 
 `gmtv_gui.py` is a Tkinter front end covering everything the CLI does. Standard library
 only, so a PyInstaller bundle needs no extra runtime, and it *imports* the patcher rather

@@ -32,9 +32,10 @@ Usage:
                           [--from-device | --abis LIST | --drop-abis LIST]
                           [--shrink-audio 128] [--install-adb] [--install-ffmpeg] [--yes]
 
-Requires: Python 3.8+ and the `cryptography` package. **No JDK.** APK v1 (JAR)
-signing is implemented in pure Python (see gmtv_sign.py) and verified against the
-JDK's own jarsigner plus a real Android 14 install.
+Requires: Python 3.8+ and the `cryptography` package. **No JDK.** Both signature
+schemes are implemented in pure Python -- v1/JAR in gmtv_sign.py and v2 in
+gmtv_sign_v2.py. Verified by the per-run self-check, which re-derives every digest
+from the finished archive, and by installing on Android 11 through 14.
 
 Optional, and only for optional features: `adb` (--from-device, installing) and
 `ffmpeg`/`vorbis-tools` (--shrink-audio). Both can be fetched for you via your
@@ -744,6 +745,24 @@ def target_sdk(apk):
     return 0
 
 
+def default_key_path():
+    """Where to keep the signing key when --key is not given.
+
+    This used to be the bare name "gmtv-key.pem", which resolves against the
+    *current directory* -- so running the tool from somewhere else silently minted
+    a second key, and the next install refused to upgrade in place and took the
+    player's save files with it. The default is now absolute, beside this script,
+    which is what the GUI already did.
+
+    An existing key in the working directory still wins, so anyone who built up a
+    gmtv-key.pem under the old behaviour keeps upgrading their installs in place.
+    """
+    cwd_key = os.path.abspath("gmtv-key.pem")
+    if os.path.exists(cwd_key):
+        return cwd_key
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmtv-key.pem")
+
+
 def verify_signature(apk):
     """Re-derive every digest from the finished APK and check it against MANIFEST.MF.
 
@@ -782,10 +801,12 @@ def main():
         description="Patch a GameMaker Studio 1.4 APK to run on Android TV.")
     ap.add_argument("apk", help="input APK (your own copy)")
     ap.add_argument("-o", "--output", help="output APK (default: <name>-tv.apk)")
-    ap.add_argument("--key", "--keystore", dest="key", default="gmtv-key.pem",
-                    help="signing key (PEM, key+cert); created if missing "
-                         "(default: gmtv-key.pem). Reuse it so patched APKs upgrade "
-                         "in place instead of needing an uninstall.")
+    ap.add_argument("--key", "--keystore", dest="key", default=default_key_path(),
+                    help="signing key (PEM, key+cert); created if missing. Defaults to "
+                         "gmtv-key.pem beside this script, so re-patching upgrades in "
+                         "place and keeps save files wherever you run from. Point it at "
+                         "a path that does not exist to mint a fresh key instead, which "
+                         "makes the result a separate app.")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would change, write nothing")
     ap.add_argument("--abis", metavar="LIST",

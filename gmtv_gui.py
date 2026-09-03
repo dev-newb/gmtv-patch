@@ -18,6 +18,7 @@ import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 import webbrowser
@@ -117,6 +118,7 @@ class App:
         self.device = tk.StringVar()
         self.dry = tk.BooleanVar(value=False)
         self.install_after = tk.BooleanVar(value=True)
+        self.upgrade_in_place = tk.BooleanVar(value=True)
         self.abi_vars = {}
         self.devices = []
         self.busy = False
@@ -285,7 +287,7 @@ class App:
         r = self.root
         r.title(APP_TITLE)
         r.minsize(460, 600)
-        self.hint = {"foreground": "#666", "font": hint_font()}
+        self.hint = {"foreground": "#666", "font": hint_font(), "wraplength": 320}
 
         head = ttk.Frame(r, padding=(10, 5, 4, 0))
         head.pack(fill="x")
@@ -405,6 +407,12 @@ class App:
         self.btn_scan.grid(row=1, column=1, sticky="ew", pady=(3, 0))
         ttk.Checkbutton(f3, text="Install to it when finished",
                         variable=self.install_after).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(f3, text="Upgrade in place — keeps your saved games",
+                        variable=self.upgrade_in_place).pack(anchor="w")
+        ttk.Label(f3, **self.hint,
+                  text="Same signing key as last time, so the TV sees an update. Uncheck "
+                       "and it installs as a separate app — uninstall the old one first."
+                  ).pack(anchor="w", padx=18)
         self.dev_info = ttk.Label(f3, **self.hint, text="")
         self.dev_info.pack(anchor="w")
 
@@ -574,8 +582,17 @@ class App:
             if self.abi_mode.get() == "device":
                 a.append("--install-adb")
             a.append("--yes")
-        # key lives beside the app so re-patches upgrade in place
-        a += ["--key", os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmtv-key.pem")]
+        # Android identifies an app by package name *and* signing certificate, so
+        # reusing the key is the whole mechanism behind an in-place upgrade. The
+        # shared key lives beside the app, not in the working directory, so it is
+        # found no matter where the app is launched from.
+        if self.upgrade_in_place.get():
+            key = os.path.join(_base_dir(), "gmtv-key.pem")
+        else:
+            # A path that cannot exist yet, so the patcher mints a fresh key and
+            # the result installs as a separate app.
+            key = os.path.join(tempfile.mkdtemp(prefix="gmtv-newkey-"), "gmtv-key.pem")
+        a += ["--key", key]
         return a
 
     def _work(self):

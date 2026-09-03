@@ -539,8 +539,19 @@ dropped with what it costs, the signing self-check. Drag the divider to give eit
 more room.
 
 **Install to it when finished** hands the result straight to `adb install` on the
-selected TV. **Preview only** runs the whole thing and writes nothing, so you can see
-what a patch would do before committing to it.
+selected TV. **Install only** sends an APK that is already patched, so an install that
+failed on space or a signature clash can be retried in seconds instead of repacking
+300 MB. **Preview only** runs the whole thing and writes nothing.
+
+**Show it on the TV home screen** adds the `LEANBACK_LAUNCHER` category, without which a
+phone game installs perfectly and then appears nowhere the remote can reach.
+**Upgrade in place** reuses the signing key so a re-patch installs over the previous
+build and keeps its save files; unchecked, the result is a separate app.
+
+When an install fails the app does not just report it. A TV that is out of space gets a
+breakdown of free versus needed and an offer to clear cached files; an older copy signed
+by someone else gets named, explained, and removed if you agree — with a warning that its
+saves go with it.
 
 Build a standalone app:
 

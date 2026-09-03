@@ -191,6 +191,44 @@ outright unless the v2 block parses exactly right.
 
 ---
 
+## Since v1.0
+
+**It shows up on the TV.** `--tv-launcher` adds the `LEANBACK_LAUNCHER` category, so a
+patched game appears on the Android TV home screen instead of installing successfully
+and then existing nowhere the remote can reach. This is the one edit here that is not
+same-size — the category string is absent from a phone manifest, so the string pool
+grows and the manifest is rebuilt. The new string is appended at the end so no existing
+index moves, and the new `<category>` is a byte-for-byte clone of the one already in the
+launcher intent-filter. A manifest Android can't parse means the APK won't install at
+all, so the rebuild is read back and checked before it is accepted.
+
+**It installs for you.** `--install` sends the finished APK to a TV, and `--install-only`
+retries without repacking — 4 seconds instead of minutes on a 300 MB archive. Both carry
+the recoveries below. `--list-devices` and `--scan-network` find TVs; the desktop app has
+the same in one **Find TVs** button.
+
+**It recovers from the two installs that actually fail.**
+
+*Signatures don't match.* Every patched APK is re-signed with this tool's key, so anyone
+who still has the original game installed is refused with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE`. The tool names the package, explains why, warns
+that removing it deletes its saved games, and retries once you agree — never without
+asking.
+
+*Out of space.* TVs are small. Measured on a 4 GB Bravia, an install needs roughly
+**2 × the APK plus ~220 MB** Android keeps in reserve, which is why 410 MB free can
+refuse a 98 MB file. The tool reports free, needed and the breakdown instead of a bare
+failure, and offers to clear cached files.
+
+**Trimming got sharper.** `--from-device` now keeps only the ABI Android will actually
+load. It always knew which one that was — it printed it — but shipped the others anyway.
+On a TV reporting `armeabi-v7a,armeabi` that was 7.8 MB of code that could never run.
+
+**`requirements.txt`.** Cloning gave you the code but not `cryptography`, and signing
+isn't optional.
+
+---
+
 ## Features
 
 **No JDK required.** Both signature schemes are implemented in pure Python — see
@@ -251,7 +289,10 @@ turn it back on.
   depends on what the original developer implemented. AM2R and Spelunky have it; Grid Run
   is touch-only and wants a Bluetooth mouse. The patch makes games **run** — it can't
   write input handling that was never there.
-- **It doesn't add a TV home-screen banner.** Launch from the sideloaded-apps area.
+- **It doesn't add a proper TV banner.** `--tv-launcher` gets the game onto the home
+  screen, but Android TV also wants a 320×180 banner image, and adding one means
+  editing `resources.arsc` rather than just the manifest. The launcher falls back to
+  the app icon, which looks plainer than a real TV app.
 - **It can't make 32-bit games 64-bit.** GameMaker 1.4 never shipped an arm64 runner.
 
 ## Legal

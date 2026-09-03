@@ -748,6 +748,85 @@ def is_out_of_space(text):
     return any(m in text for m in OUT_OF_SPACE_MARKERS)
 
 
+def confirm(question, assume_yes=False):
+    """Yes/no on the terminal. Refuses to assume consent when there is no tty."""
+    if assume_yes:
+        return True
+    if not sys.stdin.isatty():
+        return False
+    try:
+        return input(f"  {question} [y/N] ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def adb_devices():
+    """[(serial, model)] for everything adb currently sees."""
+    adb = shutil.which("adb")
+    if not adb:
+        return []
+    out = subprocess.run([adb, "devices", "-l"], capture_output=True, text=True).stdout
+    devs = []
+    for line in out.splitlines()[1:]:
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            model = next((p.split(":", 1)[1] for p in parts if p.startswith("model:")), "")
+            devs.append((parts[0], model.replace("_", " ")))
+    return devs
+
+
+def install_to_device(apk, serial=None, assume_yes=False):
+    """Install to a TV, handling the two failures these boxes actually hit.
+
+    Mirrors what the GUI does, so the CLI is not a lesser tool:
+      * Play Protect rejects re-signed sideloads silently. The adb-install
+        verifier is turned off for the one install and turned straight back on.
+      * A full TV is the normal failure on a 4GB box. `pm trim-caches` is offered
+        -- with consent, never assumed -- and the install retried.
+    """
+    adb = shutil.which("adb")
+    if not adb:
+        die("adb not found on PATH -- needed to install.\n" + ADB_HINTS)
+    pre = [adb] + (["-s", serial] if serial else [])
+
+    def run(*args):
+        return subprocess.run(pre + list(args), capture_output=True, text=True)
+
+    print(f"\ninstalling to {serial or 'the connected device'}")
+    r = run("install", "-r", apk)
+    blob = r.stdout + r.stderr
+
+    if "INSTALL_FAILED_VERIFICATION_FAILURE" in blob:
+        print("  Play Protect blocked it; disabling the adb-install verifier, "
+              "installing, then restoring it.")
+        run("shell", "settings", "put", "global", "verifier_verify_adb_installs", "0")
+        r = run("install", "-r", apk)
+        blob += r.stdout + r.stderr
+        run("shell", "settings", "put", "global", "verifier_verify_adb_installs", "1")
+
+    if is_out_of_space(blob):
+        free, cache = device_free_mb(serial), device_cache_mb(serial)
+        print(f"\n  Not enough space: {free} MB free." if free is not None
+              else "\n  Not enough space on the device.")
+        if cache:
+            print(f"  {cache} MB of that is cached files apps rebuild on demand.")
+        print("  Clearing it touches no apps, saved games or settings.")
+        if confirm("Clear the cache and retry?", assume_yes):
+            freed = trim_device_caches(serial)
+            if freed is None:
+                print("  could not clear the cache.")
+            else:
+                print(f"  freed {freed} MB -- {device_free_mb(serial)} MB now free. "
+                      "retrying…")
+                r = run("install", "-r", apk)
+                blob = r.stdout + r.stderr
+        else:
+            print("  skipped.")
+
+    print(blob.strip())
+    return "Success" in blob
+
+
 def device_free_mb(serial=None):
     """Free space on the device's data partition, in MB (None if adb can't say)."""
     adb = shutil.which("adb")
@@ -874,7 +953,7 @@ def verify_signature(apk):
 def main():
     ap = argparse.ArgumentParser(
         description="Patch a GameMaker Studio 1.4 APK to run on Android TV.")
-    ap.add_argument("apk", help="input APK (your own copy)")
+    ap.add_argument("apk", nargs="?", help="input APK (your own copy)")
     ap.add_argument("-o", "--output", help="output APK (default: <name>-tv.apk)")
     ap.add_argument("--key", "--keystore", dest="key", default=default_key_path(),
                     help="signing key (PEM, key+cert); created if missing. Defaults to "
@@ -882,6 +961,20 @@ def main():
                          "place and keeps save files wherever you run from. Point it at "
                          "a path that does not exist to mint a fresh key instead, which "
                          "makes the result a separate app.")
+    ap.add_argument("--install", nargs="?", const=True, metavar="SERIAL",
+                    help="install the finished APK to a connected TV. Handles the "
+                         "Play Protect verifier and offers to clear the TV's cache "
+                         "if it runs out of space. Optionally pass an adb serial.")
+    ap.add_argument("--new-key", action="store_true",
+                    help="sign with a brand new key instead of reusing the usual one. "
+                         "The result installs as a SEPARATE app: the old copy must be "
+                         "uninstalled first, which deletes its save files. Without this "
+                         "a re-patch upgrades in place and keeps them.")
+    ap.add_argument("--list-devices", action="store_true",
+                    help="list the TVs adb can currently see, then exit")
+    ap.add_argument("--scan-network", action="store_true",
+                    help="sweep the local network for Android TVs with wireless "
+                         "debugging on, connect them, then exit")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would change, write nothing")
     ap.add_argument("--abis", metavar="LIST",
@@ -913,6 +1006,27 @@ def main():
     ap.add_argument("--yes", "-y", action="store_true",
                     help="answer yes to the --install-ffmpeg prompt (for scripts/CI)")
     args = ap.parse_args()
+
+    if not (args.list_devices or args.scan_network) and not args.apk:
+        ap.error("an APK is required (or use --list-devices / --scan-network)")
+
+    if args.list_devices:
+        devs = adb_devices()
+        if not devs:
+            print("no devices. Is the TV on, and `adb connect <ip>:5555` done?")
+        for serial, model in devs:
+            print(f"  {serial:28s} {model}")
+        return
+    if args.scan_network:
+        import gmtv_scan
+        print("sweeping the local network for Android TVs…")
+        found = gmtv_scan.discover()
+        if not found:
+            print("  nothing found. The TV needs wireless debugging enabled.")
+        for d in found:
+            print(f"  {d['target']:24s} {d.get('model','?')}  "
+                  f"Android {d.get('release','?')}  {d.get('abilist','')}")
+        return
 
     if not os.path.exists(args.apk):
         die(f"no such file: {args.apk}")
@@ -1026,6 +1140,11 @@ def main():
                                     assume_yes=args.yes))
 
     print("\nsigning")
+    if args.new_key:
+        # A path that cannot exist yet, so a fresh key is minted and the result
+        # is a different app to Android.
+        import tempfile
+        args.key = os.path.join(tempfile.mkdtemp(prefix="gmtv-newkey-"), "gmtv-key.pem")
     *signer, key_reused = ensure_key(args.key)
 
     print(f"\nwriting {out}")
@@ -1052,6 +1171,15 @@ def main():
         print(f"  signed (v1/JAR, SHA-256 RSA) -- self-check: {detail}")
 
     print(f"\ndone: {out}  ({human(os.path.getsize(out))})")
+    if args.install:
+        serial = args.install if isinstance(args.install, str) else None
+        if install_to_device(out, serial, args.yes):
+            print("\ninstalled." + ("" if key_reused else
+                  "\nSigned with a new key, so this is a separate app from any earlier copy."))
+        else:
+            die("install failed -- see the output above")
+        return
+
     if key_reused:
         print("\nSigned with the same key as last time, so this installs straight over"
               "\nthe previous build and keeps its save files:")

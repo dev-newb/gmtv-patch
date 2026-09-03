@@ -715,12 +715,17 @@ NO_JRE = "Unable to locate a Java Runtime"
 
 
 def ensure_key(path):
-    """Load or create the signing key. Pure Python -- no JDK, no keystore."""
+    """Load or create the signing key. Pure Python -- no JDK, no keystore.
+
+    Returns (cert, key, reused). `reused` decides what the closing advice says:
+    a reused key installs straight over the previous build and keeps save files,
+    a fresh one is a different app identity and needs an uninstall first.
+    """
     import gmtv_sign
     existed = os.path.exists(path)
     cert, key = gmtv_sign.load_or_create_key(path)
     print(f"  {'using existing' if existed else 'created'} signing key: {path}")
-    return cert, key
+    return cert, key, existed
 
 
 def target_sdk(apk):
@@ -746,20 +751,18 @@ def target_sdk(apk):
 
 
 def default_key_path():
-    """Where to keep the signing key when --key is not given.
+    """Where to keep the signing key when --key is not given: beside this script.
 
-    This used to be the bare name "gmtv-key.pem", which resolves against the
-    *current directory* -- so running the tool from somewhere else silently minted
-    a second key, and the next install refused to upgrade in place and took the
-    player's save files with it. The default is now absolute, beside this script,
-    which is what the GUI already did.
+    It used to be the bare name "gmtv-key.pem", which resolves against the *current
+    directory* -- so running the tool from somewhere else silently minted a second
+    key, and the next install refused to upgrade in place and took the player's
+    save files with it.
 
-    An existing key in the working directory still wins, so anyone who built up a
-    gmtv-key.pem under the old behaviour keeps upgrading their installs in place.
+    One absolute location, always. Deliberately not "use a key in the working
+    directory if one is there", because that is the same directory-dependent
+    behaviour wearing a hat: a stray file would quietly take over and break
+    upgrades again. --key overrides this when you actually want a different one.
     """
-    cwd_key = os.path.abspath("gmtv-key.pem")
-    if os.path.exists(cwd_key):
-        return cwd_key
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "gmtv-key.pem")
 
 
@@ -951,7 +954,7 @@ def main():
                                     assume_yes=args.yes))
 
     print("\nsigning")
-    signer = ensure_key(args.key)
+    *signer, key_reused = ensure_key(args.key)
 
     print(f"\nwriting {out}")
     kept, dropped = build(args.apk, out, patched, drop, signer=signer)
@@ -977,12 +980,18 @@ def main():
         print(f"  signed (v1/JAR, SHA-256 RSA) -- self-check: {detail}")
 
     print(f"\ndone: {out}  ({human(os.path.getsize(out))})")
-    print("\nThe APK is signed with a new key, so uninstall any existing copy first:")
-    print("  adb uninstall <package>")
-    print("  adb install " + out)
+    if key_reused:
+        print("\nSigned with the same key as last time, so this installs straight over"
+              "\nthe previous build and keeps its save files:")
+        print("  adb install -r " + out)
+    else:
+        print("\nThis is a brand new signing key, so Android sees a different app."
+              "\nUninstall the old copy first -- that deletes its save files:")
+        print("  adb uninstall <package>")
+        print("  adb install " + out)
+        print("\nKeep " + args.key + " and future patches will upgrade in place instead.")
     print("\nIf install fails with INSTALL_FAILED_VERIFICATION_FAILURE, Play Protect")
     print("is rejecting it. Disable it on the device, install, then re-enable.")
-    print("Keep " + args.key + " to upgrade in place later without uninstalling.")
 
 
 if __name__ == "__main__":

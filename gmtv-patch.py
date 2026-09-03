@@ -1133,6 +1133,11 @@ def main():
                     help="install the finished APK to a connected TV. Handles the "
                          "Play Protect verifier and offers to clear the TV's cache "
                          "if it runs out of space. Optionally pass an adb serial.")
+    ap.add_argument("--tv-launcher", action="store_true",
+                    help="add android.intent.category.LEANBACK_LAUNCHER so the game "
+                         "appears on the Android TV home screen instead of only in "
+                         "the sideloaded-apps list. Rebuilds the binary manifest "
+                         "rather than patching it in place.")
     ap.add_argument("--install-only", action="store_true",
                     help="install an APK that is already patched and skip the patch "
                          "step entirely. Use this to retry an install that failed on "
@@ -1308,6 +1313,23 @@ def main():
                     print("        already set that way -- nothing to change")
         except Exception as e:
             die(f"could not rewrite orientation: {e}")
+
+    if args.tv_launcher:
+        import gmtv_axml
+        try:
+            # start from the orientation-edited manifest if there is one, so the
+            # two manifest edits compose instead of overwriting each other
+            base = patched.get("AndroidManifest.xml")
+            man = base[0] if base else zipfile.ZipFile(args.apk).read("AndroidManifest.xml")
+            new_man, note = gmtv_axml.add_leanback_launcher(man)
+            print(f"\ntv    : {note}")
+            if new_man != man:
+                # A rebuilt manifest Android cannot parse means the APK will not
+                # install at all, so read it back before accepting it.
+                gmtv_axml.verify_manifest(new_man)
+                patched["AndroidManifest.xml"] = (new_man, zipfile.ZIP_DEFLATED)
+        except Exception as e:
+            die(f"could not add the TV launcher entry: {e}")
 
     if args.dry_run:
         if args.shrink_audio:

@@ -214,6 +214,8 @@ Writes `YourGame-tv.apk`, signed and ready to sideload.
       --list-devices      list the TVs adb can currently see, then exit
       --scan-network      sweep the LAN for TVs with wireless debugging, then exit
       --install [SERIAL]  install to a connected TV when finished
+      --tv-launcher       add LEANBACK_LAUNCHER so the game shows up on the
+                          Android TV home screen, not just in sideloaded apps
       --install-only      install an already-patched APK, skipping the patch —
                           retry a failed upload without repacking 300MB
 
@@ -577,9 +579,10 @@ The result is one file the user double-clicks. No Python, no Java, nothing to in
   size, offset and visibility settings. Grid Run is the genuinely touch-only one.
 - **32-bit only.** GameMaker 1.4 never shipped an arm64 runner, so these games run under
   32-bit ARM translation on modern devices. Not patchable — needs a rebuild.
-- **Launcher placement.** No `LEANBACK_LAUNCHER` category or TV banner is added, since
-  that means rebuilding resources. Launch from the "sideloaded apps" area, or use a
-  separate banner tool.
+- **A proper TV banner.** `--tv-launcher` gets the game onto the home screen by adding
+  the `LEANBACK_LAUNCHER` category, but Android TV also wants a 320x180 banner image,
+  and adding one means editing `resources.arsc` rather than just the manifest. Without
+  it the launcher falls back to the app icon.
 
 ## Legal
 

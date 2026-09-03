@@ -398,13 +398,13 @@ class App:
         self.dev_grid.columnconfigure(0, weight=1)
         self.dev_combo = ttk.Combobox(self.dev_grid, textvariable=self.device,
                                       state="readonly", width=10)
-        self.dev_combo.grid(row=0, column=0, rowspan=2, sticky="ew", padx=(0, 6))
-        self.btn_rescan = ttk.Button(self.dev_grid, text="Rescan",
-                                     command=self.refresh_devices)
-        self.btn_rescan.grid(row=0, column=1, sticky="ew")
-        self.btn_scan = ttk.Button(self.dev_grid, text="Scan network…",
-                                   command=self.scan_network)
-        self.btn_scan.grid(row=1, column=1, sticky="ew", pady=(3, 0))
+        self.dev_combo.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        # One button, not two. "Rescan" only ever re-read what adb already knew,
+        # produced no console output, and had usually just run at startup anyway
+        # -- so it read as a dead control next to one that actually finds things.
+        self.btn_find = ttk.Button(self.dev_grid, text="Find TVs",
+                                   command=self.find_devices)
+        self.btn_find.grid(row=0, column=1, sticky="ew")
         ttk.Checkbutton(f3, text="Install to it when finished",
                         variable=self.install_after).pack(anchor="w", pady=(4, 0))
         ttk.Checkbutton(f3, text="Upgrade in place — keeps your saved games",
@@ -477,24 +477,66 @@ class App:
         if p:
             self.apk.set(p)
 
-    def refresh_devices(self):
-        """Scan for adb devices without freezing the window."""
-        self.dev_combo.configure(values=["(scanning…)"])
-        self.device.set("(scanning…)")
+    def _describe(self, serial):
+        """Android version and loadable ABIs for one device (blank if it won't say)."""
+        adb = adb_path()
+        try:
+            g = lambda k: subprocess.run([adb, "-s", serial, "shell", "getprop", k],
+                                         capture_output=True, text=True,
+                                         timeout=15).stdout.strip()
+            return (f"Android {g('ro.build.version.release')} — "
+                    f"loads: {g('ro.product.cpu.abilist')}")
+        except Exception:
+            return ""
+
+    def refresh_devices(self, announce=False):
+        """List what adb already knows, without freezing the window."""
+        self.dev_combo.configure(values=["(looking…)"])
+        self.device.set("(looking…)")
         self.dev_info.configure(text="")
         def work():
             devs = adb_devices()
-            info = ""
+            if announce:
+                self.q.put(("log", (f"adb already knows {len(devs)} device(s).\n"
+                                    if devs else
+                                    "adb knows no devices yet.\n"), None))
+                for s, m in devs:
+                    self.q.put(("log", f"  {m or 'device'}  ({s})\n", None))
+            self.q.put(("devices", devs, self._describe(devs[0][0]) if devs else ""))
+        threading.Thread(target=work, daemon=True).start()
+
+    def find_devices(self):
+        """Ask adb first, then go looking on the network only if it came up empty.
+
+        Two buttons made the user choose between "re-read what adb knows" and
+        "go hunting", which is not a distinction they should have to care about.
+        The cheap check runs first because it is instant and touches nothing; the
+        network sweep is ~3s and opens a connection to every address on the
+        subnet, so it stays a fallback rather than something that fires on every
+        click.
+        """
+        self.dev_combo.configure(values=["(looking…)"])
+        self.device.set("(looking…)")
+        self.write("\nlooking for TVs…\n", "ok")
+        def work():
+            devs = adb_devices()
             if devs:
-                adb, s0 = adb_path(), devs[0][0]
-                try:
-                    g = lambda k: subprocess.run([adb, "-s", s0, "shell", "getprop", k],
-                                                 capture_output=True, text=True,
-                                                 timeout=15).stdout.strip()
-                    info = f"Android {g('ro.build.version.release')} — loads: {g('ro.product.cpu.abilist')}"
-                except Exception:
-                    info = ""
-            self.q.put(("devices", devs, info))
+                self.q.put(("log", f"adb already knows {len(devs)} device(s).\n", None))
+                for s, m in devs:
+                    self.q.put(("log", f"  {m or 'device'}  ({s})\n", None))
+                self.q.put(("devices", devs, self._describe(devs[0][0])))
+                return
+            self.q.put(("log", "nothing connected yet — sweeping the local network…\n",
+                        None))
+            try:
+                sys.path.insert(0, _base_dir())
+                import gmtv_scan
+                found = gmtv_scan.discover(
+                    progress=lambda d, t: self.q.put(("scanprog", d, t)))
+            except Exception as e:
+                self.q.put(("log", f"scan failed: {e}\n", "err"))
+                found = []
+            self.q.put(("scandone", found))
         threading.Thread(target=work, daemon=True).start()
 
     def _serial(self):
@@ -528,22 +570,6 @@ class App:
                 sink.see("end")
             except tk.TclError:
                 self.log_sinks.remove(sink)     # window was closed underneath us
-
-    def scan_network(self):
-        """Sweep the LAN for Android devices with adb open, off the main thread."""
-        self.dev_info.configure(text="scanning the network…")
-        self.write("\nscanning local network for Android devices…\n", "ok")
-        def work():
-            try:
-                sys.path.insert(0, _base_dir())
-                import gmtv_scan
-                found = gmtv_scan.discover(
-                    progress=lambda d, t: self.q.put(("scanprog", d, t)))
-            except Exception as e:
-                self.q.put(("log", f"scan failed: {e}\n", "err"))
-                found = []
-            self.q.put(("scandone", found))
-        threading.Thread(target=work, daemon=True).start()
 
     def run(self):
         if self.busy:

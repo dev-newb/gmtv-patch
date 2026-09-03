@@ -26,15 +26,24 @@ Incorrect Android target... this executable targets Android TV devices.
 This build is for Android
 ```
 
-This has been an open question for years. The two places people asked:
+This has been an open question for years. Some places people asked for help:
 
 - [XDA, Nov 2018](https://xdaforums.com/t/help-request-am2r-game-dont-work-on-android-tv-how-to-fool-it.3872253/) —
-  three posts, all by the person asking, **zero replies**, ending "So no solution? :/"
+  AM2R on a Shield. Three posts, all by the person asking, **zero replies**, ending
+  "So no solution? :/". The thread title is *"how to fool it"* — the right instinct,
+  seven years early.
 - [GameMaker Community, 2017](https://forum.gamemaker.io/index.php?threads/apk-does-not-work-on-nvidia-shield-solved.26994/) —
   marked `[solved]`, but the solution is *rebuild the project* on GMS 1.4.1657 (pre-Gradle).
   Russell Kay of YoYo Games confirms in-thread: "1.x does not support Android TV but 2.x does."
+- [itch.io, Oct 2017](https://itch.io/t/154069/android-tv) — Spelunky Classic HD:
+  *"I tried to install this to my Nvidia Shield TV but it would not run, stating that it
+  was designed for Android only."* The developer had no Shield to test on, suggested
+  building from source, and eventually archived the thread unresolved.
+- [SpelunkyClassicHD issue #37](https://github.com/yancharkin/SpelunkyClassicHD/issues/37) —
+  the same problem reported again on GitHub, and still open.
 
-Both documented fixes need the original project. Neither helps if you have only an APK.
+Every documented fix needs the original project. None of them help if you have only an APK —
+which is the position anyone is in with an abandoned game.
 
 ## Why everyone was stuck
 

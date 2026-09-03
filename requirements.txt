@@ -1,0 +1,12 @@
+# The only third-party dependency. Everything else the tool uses is stdlib.
+#
+# Signing is why this is here: patching a byte inside an APK invalidates its
+# signature, and Android refuses to install an unsigned package, so every
+# patched build has to be re-signed before it will install. `cryptography`
+# supplies the primitives for that -- RSA key generation, SHA-256, the
+# self-signed X.509 certificate, and the detached PKCS#7 blob in CERT.RSA.
+#
+# The APK signature *formats* are implemented here, not by this library:
+# v1 (JAR) in gmtv_sign.py and v2 (APK Signature Scheme v2) in gmtv_sign_v2.py.
+# That split is what removes the JDK dependency -- no jarsigner needed.
+cryptography>=3.4

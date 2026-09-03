@@ -677,6 +677,8 @@ class App:
         # Run the CLI's main() in-process with stdout/stderr captured live.
         code = 0
         old_argv, old_out, old_err = sys.argv, sys.stdout, sys.stderr
+        os.environ["GMTV_NO_HINTS"] = "1"   # we install ourselves; the CLI's
+                                            # manual-install advice only confuses here
         sys.argv = ["gmtv-patch"] + argv
         sys.stdout = sys.stderr = _Tee(self.q)
         try:
@@ -727,6 +729,26 @@ class App:
             blob += r.stdout + r.stderr
             sh("shell", "settings", "put", "global", "verifier_verify_adb_installs", "1")
 
+        pkg = self.patcher.blocking_package(blob) if self.patcher else None
+        if pkg:
+            self.q.put(("log", blob.strip() + "\n", "err"))
+            if self._ask("An older copy is in the way",
+                         f"{pkg} is already installed on the TV, signed by "
+                         "someone else.\n\nA patched APK carries this tool's own "
+                         "signing key, so Android sees a different app and will "
+                         "not overwrite the old one.\n\nRemove the old copy and "
+                         "continue?\n\nTHIS DELETES ITS SAVED GAMES."):
+                freed = self.patcher.uninstall_package(pkg, s)
+                if freed is None:
+                    self.q.put(("log", "could not uninstall it.\n", "err"))
+                else:
+                    self.q.put(("log", f"removed {pkg}, recovering {freed} MB. "
+                                       "retrying…\n", "ok"))
+                    r = sh("install", "-r", out)
+                    blob = r.stdout + r.stderr
+            else:
+                blob += "\nLeft the old copy alone."
+
         # A full TV is the common failure on these boxes -- 4GB partitions, and
         # Android wants roughly twice the APK size while installing. Offer the one
         # reclaim that cannot cost the user anything, and only with their say-so.
@@ -735,8 +757,11 @@ class App:
             cache = self.patcher.device_cache_mb(s)
             self.q.put(("log", blob.strip() + "\n", "err"))
             detail = f"{free} MB free" if free is not None else "very little space left"
-            offer = (f"{cache} MB is cached files that apps rebuild on demand."
-                     if cache else "Some of it is cached files that apps rebuild on demand.")
+            # Android's diskstats cache figure is not a promise: it reported
+            # 153MB on a Bravia where pm trim-caches then returned 3MB. Say what
+            # will be attempted, and report afterwards what actually came back.
+            offer = ("Some of that is cached files apps rebuild on demand, "
+                     "though Android rarely releases as much as it claims to hold.")
             if self._ask("Not enough space on the TV",
                          f"The TV has {detail}, which is not enough to install this.\n\n"
                          f"{offer}\n\nClear that cache and try again?\n\n"

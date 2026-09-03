@@ -819,6 +819,23 @@ def install_to_device(apk, serial=None, assume_yes=False):
         blob += r.stdout + r.stderr
         run("shell", "settings", "put", "global", "verifier_verify_adb_installs", "1")
 
+    pkg = blocking_package(blob)
+    if pkg:
+        print(f"\n  {pkg} is already installed, signed by someone else.")
+        print("  A patched APK carries our signing key, so Android treats it as a")
+        print("  different app and will not overwrite the old one.")
+        print("  Removing the old copy DELETES ITS SAVED GAMES.")
+        if confirm(f"Uninstall {pkg} and continue?", assume_yes):
+            freed = uninstall_package(pkg, serial)
+            if freed is None:
+                print("  could not uninstall it.")
+            else:
+                print(f"  removed it, recovering {freed} MB. retrying…")
+                r = run("install", "-r", apk)
+                blob = r.stdout + r.stderr
+        else:
+            print("  left it alone.")
+
     if is_out_of_space(blob):
         # The attempt that just failed left its own staging behind. Clear that
         # first -- it is pure waste, needs no permission, and on its own is often
@@ -901,6 +918,48 @@ def device_cache_mb(serial=None):
 # is why the plain free number is so misleading here -- 410MB free looks like
 # plenty for a 98MB file and is seven megabytes short.
 INSTALL_RESERVE_MB = 220
+
+
+def blocking_package(text):
+    """Package name Android is refusing to overwrite, or None.
+
+    Every patched APK is re-signed with our own key, so Android sees a different
+    author for the same package name and rejects the install:
+
+      INSTALL_FAILED_UPDATE_INCOMPATIBLE: Package com.lojical.AM2R signatures
+      do not match previously installed version; ignoring!
+
+    That is not an edge case -- it is what happens to anyone who still has the
+    original game installed, which is most people. The old copy has to go first,
+    and that deletes its saves, so it is always the user's call.
+
+    It also catches a half-uninstalled leftover, where installed=false hides the
+    package from every app list while its files and signature record survive. One
+    of those was holding 161MB on a 4GB Bravia and could not be found through the
+    UI at all.
+    """
+    if "INSTALL_FAILED_UPDATE_INCOMPATIBLE" not in text:
+        return None
+    m = re.search(r"Package ([A-Za-z0-9_.]+) signatures do not match", text)
+    return m.group(1) if m else None
+
+
+def uninstall_package(pkg, serial=None):
+    """Remove a package. Returns MB freed (None if adb refused)."""
+    adb = shutil.which("adb")
+    if not adb:
+        return None
+    before = device_free_mb(serial)
+    pre = [adb] + (["-s", serial] if serial else [])
+    try:
+        r = subprocess.run(pre + ["uninstall", pkg], capture_output=True,
+                           text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if "Success" not in (r.stdout + r.stderr):
+        return None
+    after = device_free_mb(serial)
+    return None if (before is None or after is None) else max(0, after - before)
 
 
 def install_need_mb(apk_path):
@@ -1315,8 +1374,12 @@ def main():
         print("  adb uninstall <package>")
         print("  adb install " + out)
         print("\nKeep " + args.key + " and future patches will upgrade in place instead.")
-    print("\nIf install fails with INSTALL_FAILED_VERIFICATION_FAILURE, Play Protect")
-    print("is rejecting it. Disable it on the device, install, then re-enable.")
+    if not os.environ.get("GMTV_NO_HINTS"):
+        # Suppressed by the GUI, which installs for itself. Printed unconditionally
+        # it reads as a warning that Play Protect just rejected something, rather
+        # than advice for someone about to run adb by hand.
+        print("\nIf install fails with INSTALL_FAILED_VERIFICATION_FAILURE, Play Protect")
+        print("is rejecting it. Disable it on the device, install, then re-enable.")
 
 
 if __name__ == "__main__":

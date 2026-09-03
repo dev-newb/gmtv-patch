@@ -432,6 +432,18 @@ uninstall and no lost saves.
 - **No JDK.** Both signature schemes are pure Python — v1 (JAR) in `gmtv_sign.py`,
   v2 (APK Signature Scheme v2) in `gmtv_sign_v2.py`.
 
+```bash
+git clone https://github.com/dev-newb/gmtv-patch.git
+cd gmtv-patch
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+.venv/bin/python gmtv-patch.py YourGame.apk --dry-run
+```
+
+The virtualenv is not stylistic: macOS and most current Linux distributions refuse
+`pip install` into the system Python (PEP 668, *externally-managed-environment*).
+And `cryptography` is not optional — a patched APK will not install until it has
+been re-signed, so signing runs on every patch, not just on some flag.
+
 Optional, only for optional features:
 
 | Tool | Needed for | If missing |

@@ -46,6 +46,7 @@ show the exact command and ask first.
 import argparse
 import binascii
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -819,9 +820,28 @@ def install_to_device(apk, serial=None, assume_yes=False):
         run("shell", "settings", "put", "global", "verifier_verify_adb_installs", "1")
 
     if is_out_of_space(blob):
+        # The attempt that just failed left its own staging behind. Clear that
+        # first -- it is pure waste, needs no permission, and on its own is often
+        # enough. Only then is it worth asking about the cache.
+        n, freed = abandon_install_sessions(serial)
+        if n:
+            print(f"  cleared {n} half-finished install session(s), "
+                  f"recovering {freed} MB")
+            r = run("install", "-r", apk)
+            blob = r.stdout + r.stderr
+            if "Success" in blob:
+                print(blob.strip())
+                return True
+
+    if is_out_of_space(blob):
         free, cache = device_free_mb(serial), device_cache_mb(serial)
-        print(f"\n  Not enough space: {free} MB free." if free is not None
-              else "\n  Not enough space on the device.")
+        need = install_need_mb(apk)
+        if free is not None and need is not None:
+            print(f"\n  Not enough space: {free} MB free, this needs about {need} MB.")
+            print(f"  ({int(os.path.getsize(apk) / 1048576)} MB APK, staged then "
+                  f"installed, plus ~{INSTALL_RESERVE_MB} MB Android keeps in reserve.)")
+        else:
+            print("\n  Not enough space on the device.")
         if cache:
             print(f"  {cache} MB of that is cached files apps rebuild on demand.")
         print("  Clearing it touches no apps, saved games or settings.")
@@ -866,6 +886,81 @@ def device_cache_mb(serial=None):
         return int(out.split(":")[1].strip()) // (1024 * 1024)
     except (ValueError, IndexError, OSError, subprocess.SubprocessError):
         return None
+
+
+# Android will not spend its last slice of the data partition on an install, and
+# it stages a copy before materialising the real one. Measured on a 4GB Bravia
+# (2026-09), where the reserve works out around 220MB:
+#
+#     5.0MB APK @ 367MB free -> installs
+#    36.3MB APK @ 311MB free -> installs
+#    98.4MB APK @ 410MB free -> INSTALL_FAILED_INSUFFICIENT_STORAGE
+#   114.2MB APK @ 413MB free -> INSTALL_FAILED_INSUFFICIENT_STORAGE
+#
+# needed = 2*apk + reserve fits all four. "Free space > APK size" does not, which
+# is why the plain free number is so misleading here -- 410MB free looks like
+# plenty for a 98MB file and is seven megabytes short.
+INSTALL_RESERVE_MB = 220
+
+
+def install_need_mb(apk_path):
+    """Roughly what the data partition needs free to accept this APK."""
+    try:
+        return int(2 * os.path.getsize(apk_path) / (1024 * 1024)) + INSTALL_RESERVE_MB
+    except OSError:
+        return None
+
+
+def abandon_install_sessions(serial=None):
+    """Throw away half-finished install sessions. Returns (count, mb_freed).
+
+    A failed install does not clean up after itself immediately: the session was
+    created, the APK streamed into it, and the staged copy sits there holding
+    roughly the APK's size until Android reaps it on its own schedule. Watching a
+    4GB Bravia, free space went 413MB -> 299MB on a failed install and only came
+    back a while later.
+
+    That makes an immediate retry worse than useless -- it competes with the
+    leftovers of the attempt before it, fails for the same reason, and leaks
+    again. Clearing them first is what makes retrying converge instead of spiral.
+
+    There is no `pm list sessions` on Android 12, so the ids come out of
+    `dumpsys package installer`, which lists them under "Active install sessions".
+    """
+    adb = shutil.which("adb")
+    if not adb:
+        return 0, 0
+    pre = [adb] + (["-s", serial] if serial else [])
+    try:
+        dump = subprocess.run(pre + ["shell", "dumpsys package installer"],
+                              capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return 0, 0
+
+    ids, active = [], False
+    for line in dump.splitlines():
+        if line.startswith("Active install sessions:"):
+            active = True
+            continue
+        if active and line and not line.startswith((" ", "\t")):
+            break                                   # next top-level section
+        if active:
+            m = re.search(r"sessionId=(\d+)", line)
+            if m:
+                ids.append(m.group(1))
+    if not ids:
+        return 0, 0
+
+    before = device_free_mb(serial)
+    for sid in ids:
+        try:
+            subprocess.run(pre + ["shell", "pm", "install-abandon", sid],
+                           capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError):
+            pass
+    after = device_free_mb(serial)
+    freed = 0 if (before is None or after is None) else max(0, after - before)
+    return len(ids), freed
 
 
 def trim_device_caches(serial=None):

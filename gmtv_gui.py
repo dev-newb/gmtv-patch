@@ -627,6 +627,17 @@ class App:
         else:
             self.q.put(("done", f"Saved: {os.path.basename(out)}", True))
 
+    def _ask(self, title, msg):
+        """Yes/no from a worker thread. Tk is main-thread-only, so the dialog is
+        posted there and this blocks until the answer comes back."""
+        box, done = {}, threading.Event()
+        def show():
+            box["yes"] = messagebox.askyesno(title, msg, parent=self.root)
+            done.set()
+        self.root.after(0, show)
+        done.wait()
+        return box.get("yes", False)
+
     def _install(self, out):
         adb, s = adb_path(), self._serial()
         self.q.put(("log", f"\ninstalling to {s}\n", None))
@@ -641,6 +652,35 @@ class App:
             r = sh("install", "-r", out)
             blob += r.stdout + r.stderr
             sh("shell", "settings", "put", "global", "verifier_verify_adb_installs", "1")
+
+        # A full TV is the common failure on these boxes -- 4GB partitions, and
+        # Android wants roughly twice the APK size while installing. Offer the one
+        # reclaim that cannot cost the user anything, and only with their say-so.
+        if self.patcher and self.patcher.is_out_of_space(blob):
+            free = self.patcher.device_free_mb(s)
+            cache = self.patcher.device_cache_mb(s)
+            self.q.put(("log", blob.strip() + "\n", "err"))
+            detail = f"{free} MB free" if free is not None else "very little space left"
+            offer = (f"{cache} MB is cached files that apps rebuild on demand."
+                     if cache else "Some of it is cached files that apps rebuild on demand.")
+            if self._ask("Not enough space on the TV",
+                         f"The TV has {detail}, which is not enough to install this.\n\n"
+                         f"{offer}\n\nClear that cache and try again?\n\n"
+                         "This only discards cached files. Apps, saved games and "
+                         "settings are left alone."):
+                self.q.put(("log", "\nclearing cached files on the TV…\n", None))
+                freed = self.patcher.trim_device_caches(s)
+                if freed is None:
+                    self.q.put(("log", "could not clear the cache.\n", "err"))
+                else:
+                    now = self.patcher.device_free_mb(s)
+                    self.q.put(("log", f"freed {freed} MB — {now} MB now free. "
+                                       "retrying install…\n", "ok"))
+                    r = sh("install", "-r", out)
+                    blob = r.stdout + r.stderr
+            else:
+                blob += "\nSkipped clearing the cache."
+
         self.q.put(("log", blob.strip() + "\n", None))
         ok = "Success" in blob
         self.q.put(("done", "Installed to your TV" if ok else "Install failed", ok))

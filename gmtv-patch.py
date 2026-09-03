@@ -728,6 +728,78 @@ def ensure_key(path):
     return cert, key, existed
 
 
+# Out-of-space shows up in more than one shape. The classic constant appears on
+# older releases; Android 12+ fails earlier than that, when the install *session*
+# is created, and surfaces a raw IOException instead -- which is what a 4GB Bravia
+# actually prints:
+#
+#   android.os.ParcelableException: java.io.IOException:
+#       Requested internal only, but not enough space
+#
+# Matching only on INSTALL_FAILED_INSUFFICIENT_STORAGE misses that entirely.
+OUT_OF_SPACE_MARKERS = (
+    "INSTALL_FAILED_INSUFFICIENT_STORAGE",
+    "not enough space",
+    "Requested internal only",
+)
+
+
+def is_out_of_space(text):
+    return any(m in text for m in OUT_OF_SPACE_MARKERS)
+
+
+def device_free_mb(serial=None):
+    """Free space on the device's data partition, in MB (None if adb can't say)."""
+    adb = shutil.which("adb")
+    if not adb:
+        return None
+    cmd = [adb] + (["-s", serial] if serial else []) + ["shell", "df /data | tail -1"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout.split()
+        return int(out[3]) // 1024                      # df reports 1K blocks
+    except (ValueError, IndexError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def device_cache_mb(serial=None):
+    """How much of the device's storage is reclaimable cache, in MB."""
+    adb = shutil.which("adb")
+    if not adb:
+        return None
+    cmd = [adb] + (["-s", serial] if serial else []) + \
+          ["shell", "dumpsys diskstats | grep -i 'App Cache Size'"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30).stdout
+        return int(out.split(":")[1].strip()) // (1024 * 1024)
+    except (ValueError, IndexError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def trim_device_caches(serial=None):
+    """Ask Android to drop cached files. Returns MB freed (None if it failed).
+
+    `pm trim-caches` is Android's own reclaim path and is the only safe thing to
+    offer here: it discards files apps registered as cache and rebuild on demand.
+    It does not touch app *data*, which on a full TV is mostly save files. Nothing
+    else on a stock device is safe to delete unattended -- an app's data directory
+    looks like dead weight and is somebody's progress.
+    """
+    adb = shutil.which("adb")
+    if not adb:
+        return None
+    before = device_free_mb(serial)
+    pre = [adb] + (["-s", serial] if serial else [])
+    try:
+        subprocess.run(pre + ["shell", "pm trim-caches 8G"],
+                       capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    after = device_free_mb(serial)
+    if before is None or after is None:
+        return None
+    return max(0, after - before)
+
+
 def target_sdk(apk):
     """Read targetSdkVersion from the binary manifest (0 if unknown)."""
     try:

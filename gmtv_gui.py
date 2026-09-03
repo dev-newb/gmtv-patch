@@ -122,6 +122,7 @@ class App:
         self.abi_vars = {}
         self.devices = []
         self.busy = False
+        self.last_out = None      # last APK we produced, for install-only retries
         self.log_sinks = []       # every Text widget that mirrors output
         self._build()
         # Everything that shells out (adb, ffmpeg) runs off the main thread AFTER the
@@ -421,6 +422,13 @@ class App:
 
         self.go_btn = ttk.Button(act, text="Patch", command=self.run)
         self.go_btn.pack(side="left")
+        # Installs fail for reasons that have nothing to do with the patch -- a full
+        # TV, Play Protect -- and repacking a 300MB archive to retry one is minutes
+        # of work for nothing. This sends the APK we already built.
+        self.send_btn = ttk.Button(act, text="Install only", command=self.install_only,
+                                   state="disabled")
+        self.send_btn.pack(side="left", padx=(6, 0))
+        self.apk.trace_add("write", self._sync_send)
         ttk.Checkbutton(act, text="Preview only — write nothing",
                         variable=self.dry).pack(side="left", padx=12)
         self.status = ttk.Label(act, text="", foreground="#2a7")
@@ -539,6 +547,45 @@ class App:
             self.q.put(("scandone", found))
         threading.Thread(target=work, daemon=True).start()
 
+    def _installable(self):
+        """The APK an install-only run would send: what we last built, else an
+        already-patched file the user picked by hand."""
+        if self.last_out and os.path.exists(self.last_out):
+            return self.last_out
+        picked = self.apk.get().strip()
+        if picked.endswith("-tv.apk") and os.path.exists(picked):
+            return picked
+        return None
+
+    def _sync_send(self, *_):
+        try:
+            self.send_btn.configure(
+                state="normal" if (self._installable() and not self.busy) else "disabled")
+        except (tk.TclError, AttributeError):
+            pass
+
+    def install_only(self):
+        """Send an already-patched APK to the TV without repacking it."""
+        if self.busy:
+            return
+        apk = self._installable()
+        if not apk:
+            messagebox.showinfo("Nothing to install",
+                                "Patch something first, or choose an APK that has "
+                                "already been patched (one ending in -tv.apk).",
+                                parent=self.root)
+            return
+        if not self._serial():
+            messagebox.showinfo("No TV selected",
+                                "Pick a TV first — press Find TVs.", parent=self.root)
+            return
+        self.busy = True
+        self._sync_send()
+        self.go_btn.configure(state="disabled")
+        self.status.configure(text="Installing…")
+        self.write(f"\ninstalling {os.path.basename(apk)} (no re-patch)\n", "ok")
+        threading.Thread(target=lambda: self._install(apk), daemon=True).start()
+
     def _serial(self):
         i = self.dev_combo.current()
         if 0 <= i < len(self.devices):
@@ -648,6 +695,7 @@ class App:
         if self.dry.get():
             self.q.put(("done", "Preview complete", True))
             return
+        self.last_out = out
         if self.install_after.get() and self._serial():
             self._install(out)
         else:
@@ -757,6 +805,7 @@ class App:
                     self.status.configure(text=msg, foreground="#2a7" if ok else "#c55")
                     self.go_btn.configure(state="normal")
                     self.busy = False
+                    self._sync_send()
         except queue.Empty:
             pass
         self.root.after(80, self._drain)

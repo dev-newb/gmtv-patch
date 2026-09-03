@@ -979,6 +979,11 @@ def main():
                     help="install the finished APK to a connected TV. Handles the "
                          "Play Protect verifier and offers to clear the TV's cache "
                          "if it runs out of space. Optionally pass an adb serial.")
+    ap.add_argument("--install-only", action="store_true",
+                    help="install an APK that is already patched and skip the patch "
+                         "step entirely. Use this to retry an install that failed on "
+                         "space or Play Protect without repacking a 300MB archive "
+                         "again. Implies --install.")
     ap.add_argument("--new-key", action="store_true",
                     help="sign with a brand new key instead of reusing the usual one. "
                          "The result installs as a SEPARATE app: the old copy must be "
@@ -1023,6 +1028,17 @@ def main():
 
     if not (args.list_devices or args.scan_network) and not args.apk:
         ap.error("an APK is required (or use --list-devices / --scan-network)")
+
+    if args.install_only:
+        if not args.apk:
+            ap.error("--install-only needs the APK to install")
+        if not os.path.exists(args.apk):
+            die(f"not found: {args.apk}")
+        serial = args.install if isinstance(args.install, str) else None
+        if not install_to_device(args.apk, serial, args.yes):
+            die("install failed -- see the output above")
+        print("\ninstalled.")
+        return
 
     if args.list_devices:
         devs = adb_devices()

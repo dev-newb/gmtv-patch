@@ -214,6 +214,8 @@ Writes `YourGame-tv.apk`, signed and ready to sideload.
       --list-devices      list the TVs adb can currently see, then exit
       --scan-network      sweep the LAN for TVs with wireless debugging, then exit
       --install [SERIAL]  install to a connected TV when finished
+      --install-only      install an already-patched APK, skipping the patch —
+                          retry a failed upload without repacking 300MB
 
       --list-abis         show the architectures inside, and what each one costs
       --abis LIST         KEEP only these ABIs (e.g. armeabi-v7a,armeabi)

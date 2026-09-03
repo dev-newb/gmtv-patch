@@ -119,6 +119,7 @@ class App:
         self.dry = tk.BooleanVar(value=False)
         self.install_after = tk.BooleanVar(value=True)
         self.upgrade_in_place = tk.BooleanVar(value=True)
+        self.tv_launcher = tk.BooleanVar(value=True)
         self.abi_vars = {}
         self.devices = []
         self.busy = False
@@ -379,6 +380,14 @@ class App:
         ttk.Label(f2, **self.hint,
                   text="Portrait games pillarbox on a TV; landscape fills it."
                   ).pack(anchor="w", pady=(2, 0))
+
+        ttk.Separator(f2).pack(fill="x", pady=3)
+        ttk.Checkbutton(f2, text="Show it on the TV home screen",
+                        variable=self.tv_launcher).pack(anchor="w")
+        ttk.Label(f2, **self.hint,
+                  text="Phone games have no TV launcher entry, so they install and then "
+                       "appear nowhere the remote can reach. Rebuilds the manifest."
+                  ).pack(anchor="w", padx=18)
 
         ttk.Separator(f2).pack(fill="x", pady=3)
         ttk.Checkbutton(f2, text="Install missing tools for me",
@@ -648,6 +657,8 @@ class App:
             a += ["--shrink-audio", self.bitrate.get()]
         if self.orient.get() != "keep":
             a += ["--orientation", self.orient.get()]
+        if self.tv_launcher.get():
+            a.append("--tv-launcher")
         if self.autotools.get():
             # only meaningful alongside the features that need those tools
             if self.audio_on.get():
